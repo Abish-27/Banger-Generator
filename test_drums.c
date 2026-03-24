@@ -4,14 +4,18 @@
 #include <stdlib.h>
 
 // GM drum note numbers
-#define KICK   36
-#define SNARE  38
-#define HIHAT  42
+#define KICK       36
+#define CLAP       39   // hand clap
+#define HIHAT      42
+#define HIHAT_OPEN 46   // open hi-hat
+#define CRASH      49   // crash cymbal
+#define COWBELL    56   // THE phonk sound
 
-#define TICKS_PER_BEAT 480
-#define TICKS_8TH      (TICKS_PER_BEAT / 2)  // 240
-#define NOTE_DURATION  100  // ticks a note stays "on"
-#define BARS           4
+#define TICKS_PER_BEAT  480
+#define TICKS_16TH      (TICKS_PER_BEAT / 4)   // 120 ticks
+#define TICKS_32ND      (TICKS_PER_BEAT / 8)   // 60 ticks — for hi-hat rolls
+#define NOTE_DURATION   60
+#define BARS            4
 
 typedef struct {
     uint32_t tick;
@@ -66,25 +70,61 @@ int main(void) {
     int n = 0;
 
     for (int bar = 0; bar < BARS; bar++) {
-        for (int step = 0; step < 8; step++) {  // 8 eighth-notes per bar
-            uint32_t t = (uint32_t)((bar * 8 + step) * TICKS_8TH);
+        // Sigma phonk — 140 BPM, 16th note grid
+        // Kick:    galloping double-kick pattern (0,2,3 | 8,10,11)
+        // Clap:    4, 12 (beats 2+4), layered with crash on bar 1 beat 1
+        // Cowbell: offbeats (1,3,5,7,9,11,13,15) — dark phonk pulse
+        // Hi-hat:  all 16 steps, loud on beats, ghost on offbeats
+        // 32nd rolls: rapid HH pairs at step 6 and 14 for tension
+        static const int kick_steps[] = {0, 2, 3, 8, 10, 11};
+        static const int clap_steps[] = {4, 12};
 
-            // Hi-hat every 8th note
-            push(evs, &n, t,                  HIHAT, 70);
-            push(evs, &n, t + NOTE_DURATION,  HIHAT, 0);
+        for (int step = 0; step < 16; step++) {
+            uint32_t t = (uint32_t)((bar * 16 + step) * TICKS_16TH);
 
-            // Kick on beats 1 and 3 (steps 0, 4)
-            if (step == 0 || step == 4) {
-                push(evs, &n, t,                 KICK, 110);
-                push(evs, &n, t + NOTE_DURATION, KICK, 0);
+            // Hi-hat: accent on beats (0,4,8,12), medium on 8ths, ghost on 16ths
+            uint8_t hh_vel = (step % 4 == 0) ? 110 : (step % 2 == 0) ? 70 : 40;
+            push(evs, &n, t,                 HIHAT, hh_vel);
+            push(evs, &n, t + NOTE_DURATION, HIHAT, 0);
+
+            // 32nd note hi-hat roll: extra hit 1 32nd before steps 6 and 14
+            if (step == 6 || step == 14) {
+                uint32_t roll = t - TICKS_32ND;
+                push(evs, &n, roll,                  HIHAT, 55);
+                push(evs, &n, roll + NOTE_DURATION,  HIHAT, 0);
+                // open hi-hat ON the step itself for the "sss" effect
+                push(evs, &n, t,                 HIHAT_OPEN, 90);
+                push(evs, &n, t + NOTE_DURATION, HIHAT_OPEN, 0);
             }
 
-            // Snare on beats 2 and 4 (steps 2, 6)
-            if (step == 2 || step == 6) {
-                push(evs, &n, t,                 SNARE, 95);
-                push(evs, &n, t + NOTE_DURATION, SNARE, 0);
+            // Cowbell on every offbeat 16th (the dark phonk pulse)
+            if (step % 2 == 1) {
+                push(evs, &n, t,                 COWBELL, 80);
+                push(evs, &n, t + NOTE_DURATION, COWBELL, 0);
+            }
+
+            // Kick — galloping double kick
+            for (int k = 0; k < 6; k++) {
+                if (step == kick_steps[k]) {
+                    uint8_t kvel = (step == 0 || step == 8) ? 127 : 100;
+                    push(evs, &n, t,                 KICK, kvel);
+                    push(evs, &n, t + NOTE_DURATION, KICK, 0);
+                }
+            }
+
+            // Clap
+            for (int c = 0; c < 2; c++) {
+                if (step == clap_steps[c]) {
+                    push(evs, &n, t,                 CLAP, 120);
+                    push(evs, &n, t + NOTE_DURATION, CLAP, 0);
+                }
             }
         }
+
+        // Crash on beat 1 of every bar for that hard drop feel
+        uint32_t bar_start = (uint32_t)(bar * 16 * TICKS_16TH);
+        push(evs, &n, bar_start,                 CRASH, 100);
+        push(evs, &n, bar_start + NOTE_DURATION, CRASH, 0);
     }
 
     qsort(evs, n, sizeof(Event), cmp_event);
@@ -93,14 +133,14 @@ int main(void) {
     FILE *tmp = tmpfile();
     if (!tmp) { perror("tmpfile"); return 1; }
 
-    // Tempo meta event: 120 BPM = 500000 microseconds/beat
+    // Tempo meta event: 140 BPM = 428571 microseconds/beat
     fputc(0x00, tmp);  // delta = 0
     fputc(0xFF, tmp);  // meta event
     fputc(0x51, tmp);  // set tempo
     fputc(0x03, tmp);  // 3 bytes follow
-    fputc(0x07, tmp);  // 500000 = 0x07A120
-    fputc(0xA1, tmp);
-    fputc(0x20, tmp);
+    fputc(0x06, tmp);  // 428571 = 0x068A1B
+    fputc(0x8A, tmp);
+    fputc(0x1B, tmp);
 
     // Write note events
     uint32_t prev = 0;
