@@ -465,8 +465,8 @@
  /* ═══════════════════════════════════════════════════════════════════════════ */
  /*  Write the final SMF Type-1 file                                             */
  /* ═══════════════════════════════════════════════════════════════════════════ */
- static void write_midi_file(const char *path, int bpm,
-                             const TrackBuf tracks[NUM_WORKERS]) {
+static void write_midi_file(const char *path, int bpm,
+                            const TrackBuf tracks[NUM_WORKERS]) {
      FILE *f = fopen(path, "wb");
      if (!f) { perror("fopen output.mid"); exit(EXIT_FAILURE); }
  
@@ -512,14 +512,52 @@
          if (fwrite(tracks[i].data, 1, tracks[i].len, f) != tracks[i].len) {
              perror("fwrite instrument track"); fclose(f); exit(EXIT_FAILURE);
          }
-     }
-     if (fclose(f) != 0) { perror("fclose"); exit(EXIT_FAILURE); }
- }
- 
- /* ═══════════════════════════════════════════════════════════════════════════ */
- /*  Input helper                                                                */
- /* ═══════════════════════════════════════════════════════════════════════════ */
- static int read_int(const char *prompt, int lo, int hi) {
+    }
+    if (fclose(f) != 0) { perror("fclose"); exit(EXIT_FAILURE); }
+}
+
+static void try_play_with_timidity(const char *path) {
+    printf("[Parent] Launching TiMidity++ playback...\n");
+    fflush(stdout);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork timidity");
+        return;
+    }
+
+    if (pid == 0) {
+        execlp("timidity", "timidity", path, (char *)NULL);
+        perror("execlp timidity");
+        _exit(127);
+    }
+
+    int status;
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("waitpid timidity");
+        return;
+    }
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
+        printf("[Parent] TiMidity++ is not installed.\n");
+        printf("         Install it, then re-run this program:\n");
+        printf("         brew install timidity\n");
+        fflush(stdout);
+        return;
+    }
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        printf("[Parent] TiMidity++ playback finished.\n");
+    } else {
+        printf("[Parent] TiMidity++ exited abnormally.\n");
+    }
+    fflush(stdout);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/*  Input helper                                                                */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+static int read_int(const char *prompt, int lo, int hi) {
      int v;
      while (1) {
          printf("%s [%d-%d]: ", prompt, lo, hi);
@@ -667,9 +705,9 @@
          free(tracks[i].data);
          tracks[i].data = NULL;
      }
- 
-     printf("[Parent] Done!  '%s' written to disk.\n", OUTPUT_FILE);
-     printf("         Open it in GarageBand, MuseScore, LMMS, or any DAW.\n");
-     fflush(stdout);
-     return EXIT_SUCCESS;
- }
+
+    printf("[Parent] Done!  '%s' written to disk.\n", OUTPUT_FILE);
+    try_play_with_timidity(OUTPUT_FILE);
+    fflush(stdout);
+    return EXIT_SUCCESS;
+}
