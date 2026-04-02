@@ -19,9 +19,11 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <stdint.h>
 #include <errno.h>
+#include <time.h>
 
 /* Constants */
 
@@ -339,6 +341,25 @@ typedef struct
     uint8_t vel;
 } DrumEv;
 
+typedef struct
+{
+    uint8_t kick_mask;
+    uint8_t snare_mask;
+    uint8_t open_hat_mask;
+} RockPattern;
+
+typedef struct
+{
+    uint8_t hit_mask;
+} RockFillPattern;
+
+typedef enum
+{
+    LOFI_STYLE_DILLA = 0,
+    LOFI_STYLE_JAZZ_HATS = 1,
+    LOFI_STYLE_ABAC = 2
+} LofiStyle;
+
 static int drum_ev_cmp(const void *a, const void *b)
 {
     const DrumEv *da = (const DrumEv *)a;
@@ -349,11 +370,40 @@ static int drum_ev_cmp(const void *a, const void *b)
     return (da->is_on - db->is_on);
 }
 
+static void push_drum_hit(DrumEv *evs, int *nev, uint32_t tick, uint32_t len,
+                          uint8_t note, uint8_t vel)
+{
+    if (*nev + 2 > MAX_DRUM_EVENTS)
+        return;
+
+    evs[(*nev)++] = (DrumEv){tick, 1, note, vel};
+    evs[(*nev)++] = (DrumEv){tick + len, 0, note, 0};
+}
+
 static void gen_drums(const SongSpec *s, DynBuf *db)
 {
     const uint32_t BEAT = TPQ;
     const uint32_t EIGHT = TPQ / 2;
+    const uint32_t THIRTYSECOND = TPQ / 8;
     const uint8_t CH = CH_DRUMS;
+    static const RockPattern rock_patterns[] = {
+        {0x51, 0x44, 0x80}, /* straight drive: 1, 3, 4 with a lifted bar-end hat */
+        {0x59, 0x44, 0x08}, /* syncopated: 1, 2&, 3, 4 with an early open hat */
+        {0x73, 0x44, 0x88}  /* busier chorus feel: 1, 1&, 3, 4, 4& */
+    };
+    static const RockFillPattern rock_fills[] = {
+        {0xFF}, /* no gaps: full 32nd-note snare burst */
+        {0xBB}, /* alternating gaps for a galloping fill */
+        {0xEF}, /* tiny rest before the last accent */
+        {0xF7}  /* early burst, quick breath, then resolve */
+    };
+    static const char *lofi_style_names[] = {
+        "Dilla",
+        "Jazz hats",
+        "ABAC"
+    };
+    const int num_rock_patterns = (int)(sizeof(rock_patterns) / sizeof(rock_patterns[0]));
+    const int num_rock_fills = (int)(sizeof(rock_fills) / sizeof(rock_fills[0]));
 
     DrumEv *evs = malloc(MAX_DRUM_EVENTS * sizeof(DrumEv));
     if (!evs)
@@ -362,19 +412,165 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
         exit(EXIT_FAILURE);
     }
     int nev = 0;
+    int rock_pattern_idx = 0;
+    int lofi_style = LOFI_STYLE_DILLA;
+
+    if (s->genre == GENRE_ROCK)
+    {
+        rock_pattern_idx = rand() % num_rock_patterns;
+        printf("[Drums] Rock groove variation %d selected\n", rock_pattern_idx + 1);
+        fflush(stdout);
+    }
+    else if (s->genre == GENRE_LOFI)
+    {
+        lofi_style = rand() % 3;
+        printf("[Drums] Lo-fi groove style: %s\n", lofi_style_names[lofi_style]);
+        fflush(stdout);
+    }
 
     for (int bar = 0; bar < s->bars; bar++)
     {
+        int is_rock_fill_bar = (s->genre == GENRE_ROCK) && ((bar + 1) % 4 == 0);
+
         if (s->genre == GENRE_ROCK && nev + 2 <= MAX_DRUM_EVENTS)
         {
             uint32_t bar_tick = (uint32_t)(bar * s->beats_per_bar) * BEAT;
-            evs[nev++] = (DrumEv){bar_tick, 1, 49, 95};
-            evs[nev++] = (DrumEv){bar_tick + EIGHT, 0, 49, 0};
+            if (bar == 0 || (bar + 1) % 4 == 0)
+                push_drum_hit(evs, &nev, bar_tick, EIGHT, 49, 100);
         }
 
         for (int beat = 0; beat < s->beats_per_bar; beat++)
         {
             uint32_t bt = (uint32_t)(bar * s->beats_per_bar + beat) * BEAT;
+
+            if (is_rock_fill_bar && beat == s->beats_per_bar - 1)
+            {
+                const RockFillPattern *fill = &rock_fills[rand() % num_rock_fills];
+
+                for (int step = 0; step < 8; step++)
+                {
+                    if ((fill->hit_mask & (1u << step)) == 0)
+                        continue;
+
+                    uint8_t note = (rand() % 4 == 0) ? 40 : 38;
+                    uint8_t vel = (step >= 6) ? (uint8_t)(102 + (rand() % 12))
+                                              : (uint8_t)(84 + (rand() % 18));
+                    push_drum_hit(evs, &nev,
+                                  bt + (uint32_t)step * THIRTYSECOND,
+                                  THIRTYSECOND / 2,
+                                  note,
+                                  vel);
+                }
+                continue;
+            }
+
+            if (s->genre == GENRE_LOFI)
+            {
+                const uint32_t LOFI_LATE = TPQ / 24;
+                const uint32_t LOFI_DRAG = TPQ / 48;
+                int abac_slot = bar % 4;
+                uint32_t hat_a = bt + ((beat % 2 == 0) ? 0 : LOFI_DRAG);
+                uint32_t hat_b = bt + EIGHT + LOFI_LATE;
+                uint8_t hat_b_note = (beat == 3) ? 46 : 42;
+
+                if (lofi_style == LOFI_STYLE_DILLA)
+                {
+                    push_drum_hit(evs, &nev, hat_a, THIRTYSECOND, 42,
+                                  (beat % 2 == 0) ? 40 : 34);
+                    push_drum_hit(evs, &nev, hat_b, THIRTYSECOND, hat_b_note,
+                                  (hat_b_note == 46) ? 54 : 46);
+
+                    if (beat == 0)
+                        push_drum_hit(evs, &nev, bt, EIGHT, 36, 72);
+                    if (beat == 1)
+                    {
+                        push_drum_hit(evs, &nev, bt + THIRTYSECOND, THIRTYSECOND / 2, 40, 34);
+                        push_drum_hit(evs, &nev, bt + LOFI_LATE, EIGHT, 38, 62);
+                        push_drum_hit(evs, &nev, bt + EIGHT, THIRTYSECOND, 36, 48);
+                    }
+                    if (beat == 2)
+                        push_drum_hit(evs, &nev, bt, EIGHT, 36, 64);
+                    if (beat == 3)
+                    {
+                        push_drum_hit(evs, &nev, bt + THIRTYSECOND, THIRTYSECOND / 2, 40, 32);
+                        push_drum_hit(evs, &nev, bt + LOFI_LATE, EIGHT, 38, 64);
+                    }
+                }
+                else if (lofi_style == LOFI_STYLE_JAZZ_HATS)
+                {
+                    uint8_t hat_a_note = (beat == 1 || beat == 3) ? 46 : 42;
+                    push_drum_hit(evs, &nev, bt, THIRTYSECOND, hat_a_note,
+                                  (hat_a_note == 46) ? 48 : 36);
+                    push_drum_hit(evs, &nev, hat_b + LOFI_DRAG, THIRTYSECOND, 42, 44);
+
+                    if (beat == 0)
+                        push_drum_hit(evs, &nev, bt, EIGHT, 36, 62);
+                    if (beat == 1)
+                    {
+                        push_drum_hit(evs, &nev, bt + LOFI_LATE, EIGHT, 38, 56);
+                        push_drum_hit(evs, &nev, bt + EIGHT + LOFI_DRAG, THIRTYSECOND / 2, 40, 28);
+                    }
+                    if (beat == 2)
+                        push_drum_hit(evs, &nev, bt, THIRTYSECOND, 36, 50);
+                    if (beat == 3)
+                    {
+                        push_drum_hit(evs, &nev, bt + LOFI_LATE, EIGHT, 38, 58);
+                        push_drum_hit(evs, &nev, bt + EIGHT + LOFI_DRAG, THIRTYSECOND, 46, 42);
+                    }
+                }
+                else
+                {
+                    int use_b = (abac_slot == 1);
+                    int use_c = (abac_slot == 3);
+
+                    push_drum_hit(evs, &nev, hat_a, THIRTYSECOND, 42,
+                                  use_c ? 32 : ((beat % 2 == 0) ? 38 : 34));
+                    push_drum_hit(evs, &nev, hat_b + (use_b ? LOFI_DRAG : 0),
+                                  THIRTYSECOND,
+                                  (use_c && beat == 3) ? 46 : 42,
+                                  use_b ? 50 : 44);
+
+                    if (!use_b && beat == 0)
+                        push_drum_hit(evs, &nev, bt, EIGHT, 36, 70);
+                    if (!use_b && beat == 1)
+                    {
+                        push_drum_hit(evs, &nev, bt + LOFI_LATE, EIGHT, 38, 60);
+                        push_drum_hit(evs, &nev, bt + EIGHT, THIRTYSECOND, 36, 44);
+                    }
+                    if (!use_b && beat == 2)
+                        push_drum_hit(evs, &nev, bt, EIGHT, 36, 62);
+                    if (!use_b && beat == 3)
+                        push_drum_hit(evs, &nev, bt + LOFI_LATE, EIGHT, 38, 62);
+
+                    if (use_b && beat == 0)
+                        push_drum_hit(evs, &nev, bt, EIGHT, 58, 58);
+                    if (use_b && beat == 1)
+                    {
+                        push_drum_hit(evs, &nev, bt + THIRTYSECOND, THIRTYSECOND / 2, 40, 30);
+                        push_drum_hit(evs, &nev, bt + LOFI_LATE, EIGHT, 38, 56);
+                    }
+                    if (use_b && beat == 2)
+                        push_drum_hit(evs, &nev, bt + LOFI_DRAG, THIRTYSECOND, 36, 50);
+                    if (use_b && beat == 3)
+                        push_drum_hit(evs, &nev, bt + LOFI_LATE, EIGHT, 38, 58);
+
+                    if (use_c && beat == 0)
+                        push_drum_hit(evs, &nev, bt, EIGHT, 36, 66);
+                    if (use_c && beat == 1)
+                    {
+                        push_drum_hit(evs, &nev, bt + THIRTYSECOND, THIRTYSECOND / 2, 40, 26);
+                        push_drum_hit(evs, &nev, bt + LOFI_LATE, EIGHT, 38, 54);
+                    }
+                    if (use_c && beat == 2)
+                        push_drum_hit(evs, &nev, bt, THIRTYSECOND, 36, 46);
+                    if (use_c && beat == 3)
+                    {
+                        push_drum_hit(evs, &nev, bt + LOFI_LATE, EIGHT, 38, 60);
+                        push_drum_hit(evs, &nev, bt + EIGHT + LOFI_DRAG, THIRTYSECOND, 46, 40);
+                    }
+                }
+                continue;
+            }
 
             /* ── Kick ── */
             int kick = 0;
@@ -386,8 +582,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                 kick_vel = 72;
                 break;
             case GENRE_ROCK:
-                kick = (beat == 0 || beat == 2 || beat == 3);
-                kick_vel = (beat == 0) ? 100 : 88;
+                kick = 0;
                 break;
             case GENRE_EDM:
                 kick = 1;
@@ -400,12 +595,11 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
             }
             if (kick && nev + 2 <= MAX_DRUM_EVENTS)
             {
-                evs[nev++] = (DrumEv){bt, 1, 36, kick_vel};
-                evs[nev++] = (DrumEv){bt + EIGHT, 0, 36, 0};
+                push_drum_hit(evs, &nev, bt, EIGHT, 36, kick_vel);
             }
 
             /* ── Snare ── */
-            if ((beat == 1 || beat == 3) && nev + 2 <= MAX_DRUM_EVENTS)
+            if (s->genre != GENRE_ROCK && (beat == 1 || beat == 3) && nev + 2 <= MAX_DRUM_EVENTS)
             {
                 uint8_t snare_vel = 80;
                 if (s->genre == GENRE_LOFI)
@@ -414,8 +608,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                     snare_vel = 95;
                 if (s->genre == GENRE_EDM)
                     snare_vel = 90;
-                evs[nev++] = (DrumEv){bt, 1, 38, snare_vel};
-                evs[nev++] = (DrumEv){bt + EIGHT, 0, 38, 0};
+                push_drum_hit(evs, &nev, bt, EIGHT, 38, snare_vel);
             }
 
             /* ── Hats: two 8th notes per beat ── */
@@ -424,6 +617,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                 uint32_t ht = bt + (uint32_t)e * EIGHT;
                 uint8_t note = 42;
                 uint8_t vel = 60;
+                int slot = beat * 2 + e;
 
                 switch (s->genre)
                 {
@@ -432,9 +626,21 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                     vel = (e == 0) ? 42 : 52;
                     break;
                 case GENRE_ROCK:
-                    note = 42;
-                    vel = 72;
+                {
+                    const RockPattern *pattern = &rock_patterns[rock_pattern_idx];
+                    if ((pattern->kick_mask & (1u << slot)) != 0)
+                    {
+                        uint8_t rock_kick_vel = (slot == 0) ? 108 : ((slot == 6) ? 94 : 88);
+                        push_drum_hit(evs, &nev, ht, EIGHT / 2, 36, rock_kick_vel);
+                    }
+                    if ((pattern->snare_mask & (1u << slot)) != 0)
+                    {
+                        push_drum_hit(evs, &nev, ht, EIGHT / 2, 38, (slot == 6) ? 100 : 96);
+                    }
+                    note = ((pattern->open_hat_mask & (1u << slot)) != 0) ? 46 : 42;
+                    vel = (note == 46) ? 78 : 70;
                     break;
+                }
                 case GENRE_EDM:
                     note = (e == 1) ? 46 : 42;
                     vel = (e == 1) ? 74 : 46;
@@ -728,9 +934,17 @@ static void child_main(int spec_fd, int track_fd, WorkerRole role)
     const char *name = (role == WORKER_DRUMS)    ? "Drums"
                        : (role == WORKER_GUITAR) ? "Guitar"
                                                  : "Piano";
+    struct timeval tv;
+    unsigned int seed;
 
     printf("[%s] Worker started (PID %d)\n", name, (int)getpid());
     fflush(stdout);
+
+    if (gettimeofday(&tv, NULL) == 0)
+        seed = (unsigned int)(tv.tv_sec ^ tv.tv_usec ^ ((unsigned int)getpid() << 16));
+    else
+        seed = (unsigned int)(time(NULL) ^ ((unsigned int)getpid() << 16));
+    srand(seed);
 
     /* 1. Receive spec */
     SongSpec spec;
