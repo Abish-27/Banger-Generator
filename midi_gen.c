@@ -454,13 +454,14 @@ static int chord_notes(int root, ChordQuality quality, int out[4])
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*
  * GM drum note map (channel 9):
- *   36 = Bass Drum, 38 = Snare, 42 = Closed HH, 46 = Open HH, 49 = Crash
+ *   36 = Bass Drum, 38 = Snare, 39 = Hand Clap, 42 = Closed HH,
+ *   46 = Open HH, 49 = Crash
  *
  * Patterns:
  *   Pop  – kick 1&3, snare 2&4, closed HH every 8th note
  *   Lo-fi– softer backbeat with airy off-beat hats
  *   Rock – punchier kick/snare with a crash at bar starts
- *   EDM  – four-on-the-floor kick, clap/snare 2&4, open hats on off-beats
+ *   EDM  – four-on-the-floor kick, clap 2&4, 16th-note hats, snare builds
  *
  * Strategy: collect (abs_tick, type, note, vel) events into an array sorted
  * by time, then emit with proper deltas.  This avoids unsigned-subtraction
@@ -529,7 +530,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                 break;
             case GENRE_EDM:
                 kick = 1;
-                kick_vel = 112;
+                kick_vel = 115;
                 break;
             default:
                 kick = (beat == 0 || beat == 2);
@@ -542,50 +543,73 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                 evs[nev++] = (DrumEv){bt + EIGHT, 0, 36, 0};
             }
 
-            /* ── Snare ── */
+            /* ── Snare / Clap ── */
             if ((beat == 1 || beat == 3) && nev + 2 <= MAX_DRUM_EVENTS)
             {
-                uint8_t snare_vel = 80;
-                if (s->genre == GENRE_LOFI)
-                    snare_vel = 62;
-                if (s->genre == GENRE_ROCK)
-                    snare_vel = 95;
                 if (s->genre == GENRE_EDM)
-                    snare_vel = 90;
-                evs[nev++] = (DrumEv){bt, 1, 38, snare_vel};
-                evs[nev++] = (DrumEv){bt + EIGHT, 0, 38, 0};
+                {
+                    /* EDM: clap on 2&4 instead of snare */
+                    evs[nev++] = (DrumEv){bt, 1, 39, 100};
+                    evs[nev++] = (DrumEv){bt + EIGHT, 0, 39, 0};
+                }
+                else
+                {
+                    uint8_t snare_vel = 80;
+                    if (s->genre == GENRE_LOFI)
+                        snare_vel = 62;
+                    if (s->genre == GENRE_ROCK)
+                        snare_vel = 95;
+                    evs[nev++] = (DrumEv){bt, 1, 38, snare_vel};
+                    evs[nev++] = (DrumEv){bt + EIGHT, 0, 38, 0};
+                }
             }
 
-            /* ── Hats: two 8th notes per beat ── */
-            for (int e = 0; e < 2; e++)
+            /* ── Hats ── */
+            if (s->genre == GENRE_EDM)
             {
-                uint32_t ht = bt + (uint32_t)e * EIGHT;
-                uint8_t note = 42;
-                uint8_t vel = 60;
-
-                switch (s->genre)
+                /* EDM: 16th-note hats with open hat on off-beat 8ths */
+                uint32_t SIXTEENTH = EIGHT / 2;
+                for (int h = 0; h < 4; h++)
                 {
-                case GENRE_LOFI:
-                    note = (e == 1 && beat == 3) ? 46 : 42;
-                    vel = (e == 0) ? 42 : 52;
-                    break;
-                case GENRE_ROCK:
-                    note = 42;
-                    vel = 72;
-                    break;
-                case GENRE_EDM:
-                    note = (e == 1) ? 46 : 42;
-                    vel = (e == 1) ? 74 : 46;
-                    break;
-                default:
-                    note = 42;
-                    vel = 60;
-                    break;
+                    uint32_t ht = bt + (uint32_t)h * SIXTEENTH;
+                    uint8_t hat_note = (h == 1 || h == 3) ? 46 : 42;
+                    uint8_t hat_vel = (h == 0) ? 80 : (h == 2) ? 60 : 50;
+                    if (nev + 2 <= MAX_DRUM_EVENTS)
+                    {
+                        evs[nev++] = (DrumEv){ht, 1, hat_note, hat_vel};
+                        evs[nev++] = (DrumEv){ht + SIXTEENTH / 2, 0, hat_note, 0};
+                    }
                 }
-                if (nev + 2 <= MAX_DRUM_EVENTS)
+            }
+            else
+            {
+                /* Other genres: two 8th notes per beat */
+                for (int e = 0; e < 2; e++)
                 {
-                    evs[nev++] = (DrumEv){ht, 1, note, vel};
-                    evs[nev++] = (DrumEv){ht + EIGHT / 2, 0, note, 0};
+                    uint32_t ht = bt + (uint32_t)e * EIGHT;
+                    uint8_t note = 42;
+                    uint8_t vel = 60;
+
+                    switch (s->genre)
+                    {
+                    case GENRE_LOFI:
+                        note = (e == 1 && beat == 3) ? 46 : 42;
+                        vel = (e == 0) ? 42 : 52;
+                        break;
+                    case GENRE_ROCK:
+                        note = 42;
+                        vel = 72;
+                        break;
+                    default:
+                        note = 42;
+                        vel = 60;
+                        break;
+                    }
+                    if (nev + 2 <= MAX_DRUM_EVENTS)
+                    {
+                        evs[nev++] = (DrumEv){ht, 1, note, vel};
+                        evs[nev++] = (DrumEv){ht + EIGHT / 2, 0, note, 0};
+                    }
                 }
             }
         }
@@ -638,7 +662,7 @@ static void gen_guitar(const SongSpec *s, DynBuf *db)
     switch (s->genre) {
     case GENRE_LOFI: prog = 26; break; /* Jazz Guitar */
     case GENRE_ROCK: prog = 29; break; /* Overdriven Guitar */
-    case GENRE_EDM:  prog = 28; break; /* Muted Guitar */
+    case GENRE_EDM:  prog = 95; break; /* Sweep Pad – synth pad */
     default:         prog = 27; break; /* Electric Guitar (clean) */
     }
 
@@ -682,10 +706,11 @@ static void gen_guitar(const SongSpec *s, DynBuf *db)
                 strum = 6;
                 break;
             case GENRE_EDM:
-                play = 1;
-                off = bt + BEAT / 3;
-                vel = (beat == 0) ? 82 : 68;
-                strum = 4;
+                /* Synth pad: sustained whole-bar chord on beat 1 only */
+                play = (beat == 0);
+                off = bt + (uint32_t)(s->beats_per_bar) * BEAT - (BEAT / 8);
+                vel = 75;
+                strum = 0;  /* no strum delay – all notes hit together */
                 break;
             default:
                 play = 1;
@@ -780,10 +805,10 @@ static const int ROCK_PATTERNS[][8] = {
 };
 
 static const int EDM_PATTERNS[][8] = {
-    {1, 0, 1, 0, 1, 0, 1, 0},  /* pulsing */
-    {1, 1, 0, 1, 1, 0, 1, 0},  /* arpeggiated feel */
-    {1, 0, 1, 1, 0, 1, 0, 1},  /* offbeat accents */
-    {0, 1, 0, 1, 1, 0, 1, 1},  /* delayed entry */
+    {1, 1, 1, 1, 1, 1, 1, 1},  /* straight arp up */
+    {1, 1, 1, 1, 1, 1, 1, 0},  /* arp with tail rest */
+    {1, 0, 1, 1, 1, 0, 1, 1},  /* gated arp */
+    {1, 1, 0, 1, 1, 1, 0, 1},  /* syncopated arp */
 };
 
 static void gen_piano(const SongSpec *s, DynBuf *db)
@@ -805,7 +830,7 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
     switch (s->genre) {
     case GENRE_LOFI: prog = 4; break; /* Electric Piano 1 */
     case GENRE_ROCK: prog = 1; break; /* Bright Acoustic Piano */
-    case GENRE_EDM:  prog = 5; break; /* Electric Piano 2 */
+    case GENRE_EDM:  prog = 80; break; /* Square Wave – synth lead */
     default:         prog = 0; break; /* Acoustic Grand Piano */
     }
     emit_prog(db, CH, prog);
@@ -890,7 +915,13 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
             }
 
             uint8_t note;
-            if (pat[e] == 1)
+            if (s->genre == GENRE_EDM)
+            {
+                /* EDM arpeggiator: cycle through chord tones in order */
+                int ci = e % chord_len;
+                note = (uint8_t)(chord[ci] + octave);
+            }
+            else if (pat[e] == 1)
             {
                 /* chord tone: cycle through chord notes based on position */
                 int ci = (int)(piano_hash((unsigned)bar, (unsigned)e) % (unsigned)chord_len);
