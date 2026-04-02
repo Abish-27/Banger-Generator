@@ -838,7 +838,7 @@ static void gen_guitar(const SongSpec *s, DynBuf *db) {
             break;
         }
         case GENRE_EDM:
-            prog = 81; prog_name = "Synth Lead Sawtooth (GM 81)";
+            prog = 28; prog_name = "Synth Lead Sawtooth (GM 81)";
             break;
         default: /* POP */
             prog = 25; prog_name = "Acoustic Steel Guitar (GM 25)";
