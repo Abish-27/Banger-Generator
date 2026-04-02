@@ -723,7 +723,7 @@ static void gen_guitar(const SongSpec *s, DynBuf *db)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
-/*  Generator: PIANO (8th-note walking melody over the scale)                  */
+/*  Generator: PIANO (chord-anchored melody with genre-specific rhythms)       */
 /* ═══════════════════════════════════════════════════════════════════════════ */
 
 #define MAX_PIANO_EVENTS 4096
@@ -745,6 +745,47 @@ static int piano_ev_cmp(const void *a, const void *b)
     return pa->is_on - pb->is_on;
 }
 
+/* Simple deterministic hash for variety without stdlib rand */
+static unsigned piano_hash(unsigned a, unsigned b)
+{
+    unsigned h = a * 2654435761u + b * 2246822519u;
+    h ^= h >> 16;
+    return h;
+}
+
+/*
+ * Per-genre 8th-note rhythm patterns for one bar (8 slots).
+ * Each value: 0 = rest, 1 = chord tone, 2 = scale passing tone.
+ * Multiple patterns per genre to rotate through bars.
+ */
+static const int POP_PATTERNS[][8] = {
+    {1, 2, 1, 0, 1, 2, 2, 0},  /* melody + rests */
+    {1, 0, 2, 1, 0, 1, 2, 1},  /* syncopated */
+    {1, 2, 0, 1, 2, 0, 1, 2},  /* breathing room */
+    {1, 1, 2, 0, 1, 2, 0, 1},  /* front-loaded */
+};
+
+static const int LOFI_PATTERNS[][8] = {
+    {1, 0, 2, 0, 1, 0, 2, 0},  /* sparse, airy */
+    {1, 0, 0, 2, 1, 0, 0, 1},  /* very sparse */
+    {0, 1, 0, 2, 0, 1, 0, 0},  /* off-beat feel */
+    {1, 2, 0, 0, 1, 0, 2, 0},  /* dreamy */
+};
+
+static const int ROCK_PATTERNS[][8] = {
+    {1, 1, 2, 1, 1, 2, 1, 0},  /* driving */
+    {1, 2, 1, 2, 1, 0, 1, 1},  /* energetic */
+    {1, 0, 1, 1, 2, 1, 0, 1},  /* punchy gaps */
+    {1, 1, 0, 1, 1, 2, 2, 1},  /* heavy */
+};
+
+static const int EDM_PATTERNS[][8] = {
+    {1, 0, 1, 0, 1, 0, 1, 0},  /* pulsing */
+    {1, 1, 0, 1, 1, 0, 1, 0},  /* arpeggiated feel */
+    {1, 0, 1, 1, 0, 1, 0, 1},  /* offbeat accents */
+    {0, 1, 0, 1, 1, 0, 1, 1},  /* delayed entry */
+};
+
 static void gen_piano(const SongSpec *s, DynBuf *db)
 {
     static const int major_scale[] = {0, 2, 4, 5, 7, 9, 11};
@@ -756,7 +797,9 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
 
     const uint32_t EIGHT = TPQ / 2;
     const uint8_t CH = CH_PIANO;
-    int si = 0, dir = 1;
+
+    const int (*patterns)[8] = POP_PATTERNS;
+    int num_patterns = 4;
 
     uint8_t prog;
     switch (s->genre) {
@@ -772,18 +815,22 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
     case GENRE_LOFI:
         scale = major_scale;
         scale_len = 7;
+        patterns = LOFI_PATTERNS;
         break;
     case GENRE_ROCK:
         scale = mixolydian;
         scale_len = 7;
+        patterns = ROCK_PATTERNS;
         break;
     case GENRE_EDM:
         scale = major_penta;
         scale_len = 5;
+        patterns = EDM_PATTERNS;
         break;
     default:
         scale = major_scale;
         scale_len = 7;
+        patterns = POP_PATTERNS;
         break;
     }
 
@@ -798,34 +845,28 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
     for (int bar = 0; bar < s->bars; bar++)
     {
         int root = bar_root(s->key_root, bar, s->genre, s->lofi_prog, s->rock_prog);
+        ChordQuality quality = chord_quality(s->genre, bar, s->lofi_prog, s->rock_prog);
+        int chord[4];
+        int chord_len = chord_notes(root, quality, chord);
+
         const int *bar_scale = scale;
         int bar_scale_len = scale_len;
 
-        if (s->genre == GENRE_LOFI)
-        {
-            if (chord_is_minor(s->genre, bar, s->lofi_prog, s->rock_prog))
-            {
-                bar_scale = minor_penta;
-                bar_scale_len = 5;
-            }
-            else
-            {
-                bar_scale = major_scale;
-                bar_scale_len = 7;
-            }
-            if (si >= bar_scale_len)
-                si = bar_scale_len - 1;
-        }
-        else if (s->genre == GENRE_ROCK && chord_is_minor(s->genre, bar, s->lofi_prog, s->rock_prog))
+        if (chord_is_minor(s->genre, bar, s->lofi_prog, s->rock_prog))
         {
             bar_scale = minor_penta;
             bar_scale_len = 5;
-            if (si >= bar_scale_len)
-                si = bar_scale_len - 1;
         }
+
+        /* pick a rhythm pattern based on bar number for variety */
+        int pat_idx = (int)(piano_hash((unsigned)bar, (unsigned)s->key_root) % (unsigned)num_patterns);
+        const int *pat = patterns[pat_idx];
 
         for (int e = 0; e < 8 && nev + 2 <= MAX_PIANO_EVENTS; e++)
         {
+            if (pat[e] == 0)
+                continue; /* rest */
+
             uint32_t on_tick = (uint32_t)(bar * s->beats_per_bar * TPQ) + (uint32_t)e * EIGHT;
             uint32_t off_tick = on_tick + (EIGHT * 3) / 4;
             uint8_t vel = (e % 2 == 0) ? 80 : 60;
@@ -848,22 +889,22 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
                 octave = (e >= 4) ? 12 : 0;
             }
 
-            uint8_t note = (uint8_t)(root + bar_scale[si] + octave);
+            uint8_t note;
+            if (pat[e] == 1)
+            {
+                /* chord tone: cycle through chord notes based on position */
+                int ci = (int)(piano_hash((unsigned)bar, (unsigned)e) % (unsigned)chord_len);
+                note = (uint8_t)(chord[ci] + octave);
+            }
+            else
+            {
+                /* passing tone: pick a scale degree based on bar+position */
+                int si = (int)(piano_hash((unsigned)bar + (unsigned)e, (unsigned)s->bpm) % (unsigned)bar_scale_len);
+                note = (uint8_t)(root + bar_scale[si] + octave);
+            }
 
             evs[nev++] = (PianoEv){on_tick, 1, note, vel};
             evs[nev++] = (PianoEv){off_tick, 0, note, 0};
-
-            si += dir;
-            if (si >= bar_scale_len)
-            {
-                si = bar_scale_len - 2;
-                dir = -1;
-            }
-            if (si < 0)
-            {
-                si = 1;
-                dir = 1;
-            }
         }
     }
 
