@@ -555,7 +555,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
             {
             case GENRE_LOFI:
                 kick = (beat == 0 || beat == 2);
-                kick_vel = 72;
+                kick_vel = (beat == 0) ? 92 : 82;
                 break;
             case GENRE_ROCK:
                 kick = 0;
@@ -571,7 +571,12 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
             }
             if (kick && nev + 2 <= MAX_DRUM_EVENTS)
             {
-                push_drum_hit(evs, &nev, bt, EIGHT, 36, kick_vel);
+                uint8_t kick_note = 36;
+                if (s->genre == GENRE_LOFI && beat == 0)
+                    kick_note = 35;
+                push_drum_hit(evs, &nev, bt, EIGHT, kick_note, kick_vel);
+                if (s->genre == GENRE_LOFI && beat == 0)
+                    push_drum_hit(evs, &nev, bt, EIGHT, 36, 74);
             }
 
             /* ── Snare ── */
@@ -716,7 +721,7 @@ static void gen_guitar(const SongSpec *s, DynBuf *db)
             case GENRE_ROCK:
                 play = 1;
                 off = bt + (BEAT * 7) / 8;
-                vel = (beat == 0 || beat == 2) ? 98 : 76;
+                vel = (beat == 0 || beat == 2) ? 112 : 90;
                 strum = 6;
                 break;
             case GENRE_EDM:
@@ -817,6 +822,13 @@ static const int ROCK_PATTERNS[][8] = {
     {1, 1, 0, 1, 1, 2, 2, 1},  /* heavy */
 };
 
+static const int ROCK_CONTOURS[][8] = {
+    {0, 2, 1, 2, 0, 2, 1, 0},  /* chord punches */
+    {0, 1, 2, 1, 0, 1, 3, 2},  /* climbing hook */
+    {0, 0, 2, 0, 0, 1, 2, 0},  /* pedal tone */
+    {2, 1, 0, 1, 2, 3, 1, 0},  /* brighter lead-in */
+};
+
 static const int EDM_PATTERNS[][8] = {
     {1, 0, 1, 0, 1, 0, 1, 0},  /* pulsing */
     {1, 1, 0, 1, 1, 0, 1, 0},  /* arpeggiated feel */
@@ -841,8 +853,8 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
 
     uint8_t prog;
     switch (s->genre) {
-    case GENRE_LOFI: prog = 4; break; /* Electric Piano 1 */
-    case GENRE_ROCK: prog = 1; break; /* Bright Acoustic Piano */
+    case GENRE_LOFI: prog = 5; break; /* Electric Piano 2 */
+    case GENRE_ROCK: prog = 0; break; /* Acoustic Grand Piano */
     case GENRE_EDM:  prog = 5; break; /* Electric Piano 2 */
     default:         prog = 0; break; /* Acoustic Grand Piano */
     }
@@ -899,6 +911,8 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
         /* pick a rhythm pattern based on bar number for variety */
         int pat_idx = (int)(piano_hash((unsigned)bar, (unsigned)s->key_root) % (unsigned)num_patterns);
         const int *pat = patterns[pat_idx];
+        int rock_contour_idx = (int)(piano_hash((unsigned)bar, (unsigned)(s->rock_prog + s->key_root)) % 4u);
+        const int *rock_contour = ROCK_CONTOURS[rock_contour_idx];
 
         for (int e = 0; e < 8 && nev + 2 <= MAX_PIANO_EVENTS; e++)
         {
@@ -913,12 +927,14 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
             if (s->genre == GENRE_LOFI)
             {
                 off_tick = on_tick + (EIGHT * 7) / 8;
-                vel = (e % 2 == 0) ? 56 : 46;
+                vel = (e % 2 == 0) ? 44 : 36;
+                octave = -12;
             }
             else if (s->genre == GENRE_ROCK)
             {
                 off_tick = on_tick + (EIGHT * 2) / 3;
-                vel = (e % 2 == 0) ? 88 : 70;
+                vel = (e % 2 == 0) ? 60 : 46;
+                octave = -12;
             }
             else if (s->genre == GENRE_EDM)
             {
@@ -928,7 +944,40 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
             }
 
             uint8_t note;
-            if (pat[e] == 1)
+            if (s->genre == GENRE_ROCK)
+            {
+                int contour = rock_contour[e];
+                if (pat[e] == 1)
+                {
+                    int ci = contour % chord_len;
+                    int base = chord[ci];
+
+                    if (rock_contour_idx == 2)
+                    {
+                        if (ci == 0)
+                            base -= 12;
+                        else if (ci == 2)
+                            base -= 5;
+                    }
+                    else if (rock_contour_idx == 3 && e >= 4)
+                    {
+                        base += 12;
+                    }
+                    note = (uint8_t)(base + octave);
+                }
+                else
+                {
+                    int si = contour % bar_scale_len;
+                    int base = root + bar_scale[si];
+
+                    if (rock_contour_idx == 2 && e < 4)
+                        base -= 12;
+                    if (rock_contour_idx == 3 && e >= 5)
+                        base += 12;
+                    note = (uint8_t)(base + octave);
+                }
+            }
+            else if (pat[e] == 1)
             {
                 /* chord tone: cycle through chord notes based on position */
                 int ci = (int)(piano_hash((unsigned)bar, (unsigned)e) % (unsigned)chord_len);
