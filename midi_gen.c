@@ -23,20 +23,18 @@
 #include <stdint.h>
 #include <errno.h>
 
-/* Constants */
+/* ==================== Constants ==================== */
 
 #define NUM_WORKERS 3
 #define OUTPUT_FILE "output.mid"
 #define TPQ 480 /* ticks per quarter note */
 
-/* MIDI channel assignments (0-indexed) */
+/* MIDI channel assignments */
 #define CH_PIANO 0
 #define CH_GUITAR 1
 #define CH_DRUMS 9 /* standard GM percussion channel */
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*  Data types                                                                 */
-/* ═══════════════════════════════════════════════════════════════════════════ */
+/* ==================== Data types ==================== */
 
 typedef enum
 {
@@ -52,18 +50,18 @@ typedef enum
     GENRE_EDM = 3
 } Genre;
 
-/* Spec written by parent → read by child (sent as raw bytes over pipe) */
+/* read by child as raw bytes over pipe */
 typedef struct
 {
     int bpm;
     int bars;
     int beats_per_bar;
     int key_root; /* MIDI root note, e.g. C4 = 60 */
-    int genre;    /* 0=pop, 1=lofi, 2=rock, 3=edm */
+    int genre; /* 0=pop, 1=lofi, 2=rock, 3=edm */
     WorkerRole role;
 } SongSpec;
 
-/* Buffer holding one complete MTrk chunk (received from child) */
+/* One complete MIDI track received from child */
 typedef struct
 {
     uint8_t *data;
@@ -78,10 +76,9 @@ typedef struct
     size_t cap;
 } DynBuf;
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*  Error-checked I/O helpers                                                  */
-/* ═══════════════════════════════════════════════════════════════════════════ */
+/* ==================== I/O helpers ==================== */
 
+/* Error-checked write */
 static void safe_write(int fd, const void *buf, size_t n, const char *ctx)
 {
     size_t done = 0;
@@ -97,6 +94,7 @@ static void safe_write(int fd, const void *buf, size_t n, const char *ctx)
     }
 }
 
+/* Error-checked read */
 static void safe_read_exact(int fd, void *buf, size_t n, const char *ctx)
 {
     size_t done = 0;
@@ -118,9 +116,7 @@ static void safe_read_exact(int fd, void *buf, size_t n, const char *ctx)
     }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*  DynBuf helpers                                                             */
-/* ═══════════════════════════════════════════════════════════════════════════ */
+/* ==================== DynBuf helpers ==================== */
 
 static void db_init(DynBuf *db)
 {
@@ -160,8 +156,6 @@ static void db_push1(DynBuf *db, uint8_t b)
 
 static void db_push_vlq(DynBuf *db, uint32_t v)
 {
-    /* MIDI variable-length quantity: big-endian 7-bit groups, MSB set on all
-     * but the last byte */
     uint8_t tmp[4];
     int len = 0;
     tmp[len++] = v & 0x7F;
@@ -171,14 +165,11 @@ static void db_push_vlq(DynBuf *db, uint32_t v)
         tmp[len++] = (v & 0x7F) | 0x80;
         v >>= 7;
     }
-    /* tmp is LE; write BE */
     for (int i = len - 1; i >= 0; i--)
         db_push1(db, tmp[i]);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*  MIDI event emitters                                                        */
-/* ═══════════════════════════════════════════════════════════════════════════ */
+/* ==================== MIDI event emitters ==================== */
 
 static void emit_prog(DynBuf *db, uint8_t ch, uint8_t prog)
 {
