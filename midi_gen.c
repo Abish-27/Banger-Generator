@@ -195,11 +195,10 @@ static void emit_off(DynBuf *db, uint32_t delta, uint8_t ch, uint8_t note)
     db_push1(db, 0);
 }
 
-/* Wrap raw event bytes inside a proper MTrk chunk (heap-allocated) */
+/* Wrap raw event bytes inside a proper MTrk chunk */
 static uint8_t *make_mtrk(const uint8_t *events, size_t ev_len,
                           size_t *out_len)
 {
-    /* MTrk header (8) + events + end-of-track meta (4) */
     size_t total = 8 + ev_len + 4;
     uint8_t *chunk = malloc(total);
     if (!chunk)
@@ -212,13 +211,12 @@ static uint8_t *make_mtrk(const uint8_t *events, size_t ev_len,
     chunk[1] = 'T';
     chunk[2] = 'r';
     chunk[3] = 'k';
-    uint32_t dlen = (uint32_t)(ev_len + 4); /* include end-of-track */
+    uint32_t dlen = (uint32_t)(ev_len + 4);
     chunk[4] = (dlen >> 24) & 0xFF;
     chunk[5] = (dlen >> 16) & 0xFF;
     chunk[6] = (dlen >> 8) & 0xFF;
     chunk[7] = dlen & 0xFF;
     memcpy(chunk + 8, events, ev_len);
-    /* end-of-track: delta=0, FF 2F 00 */
     chunk[8 + ev_len + 0] = 0x00;
     chunk[8 + ev_len + 1] = 0xFF;
     chunk[8 + ev_len + 2] = 0x2F;
@@ -228,9 +226,7 @@ static uint8_t *make_mtrk(const uint8_t *events, size_t ev_len,
     return chunk;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*  Music helpers                                                               */
-/* ═══════════════════════════════════════════════════════════════════════════ */
+/* ==================== Music helpers ==================== */
 
 static const char *genre_name(int genre)
 {
@@ -249,7 +245,7 @@ static const char *genre_name(int genre)
     }
 }
 
-/* Four-bar progressions per genre (semitones from root). */
+/* Four-bar progressions per genre */
 static int bar_root(int key_root, int bar, int genre)
 {
     static const int pop[] = {0, 7, 9, 5};
