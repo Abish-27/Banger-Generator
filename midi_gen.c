@@ -22,6 +22,7 @@
 #include <sys/wait.h>
 #include <stdint.h>
 #include <errno.h>
+#include <time.h>
 
 /* ==================== Constants ==================== */
 
@@ -58,6 +59,7 @@ typedef struct
     int beats_per_bar;
     int key_root; /* MIDI root note, e.g. C4 = 60 */
     int genre; /* 0=pop, 1=lofi, 2=rock, 3=edm */
+    int lofi_prog; /* chosen once per song when genre=lofi */
     WorkerRole role;
 } SongSpec;
 
@@ -245,20 +247,85 @@ static const char *genre_name(int genre)
     }
 }
 
+typedef enum
+{
+    CHORD_MAJOR = 0,
+    CHORD_MINOR = 1,
+    CHORD_DOM7 = 2,
+    CHORD_MAJOR7 = 3,
+    CHORD_MINOR7 = 4
+} ChordQuality;
+
+typedef struct
+{
+    const char *name;
+    int roots[4];
+    ChordQuality qualities[4];
+} LofiProgression;
+
+static const LofiProgression LOFI_PROGRESSIONS[] = {
+    {"Chill Jazzy Imaj7-vim7-iim7-V7",
+     {0, 9, 2, 7},
+     {CHORD_MAJOR7, CHORD_MINOR7, CHORD_MINOR7, CHORD_DOM7}},
+    {"Chill Jazzy IVmaj7-iiim7-vim7-V7",
+     {5, 4, 9, 7},
+     {CHORD_MAJOR7, CHORD_MINOR7, CHORD_MINOR7, CHORD_DOM7}},
+    {"Chill Jazzy bVIImaj7-vim7-iim7-vm7",
+     {10, 9, 2, 7},
+     {CHORD_MAJOR7, CHORD_MINOR7, CHORD_MINOR7, CHORD_MINOR7}},
+    {"Dreamy Imaj7-V-vim7-IVmaj7",
+     {0, 7, 9, 5},
+     {CHORD_MAJOR7, CHORD_MAJOR, CHORD_MINOR7, CHORD_MAJOR7}},
+    {"Dreamy Imaj7-iiim7-vim7-Vmaj7",
+     {0, 4, 9, 7},
+     {CHORD_MAJOR7, CHORD_MINOR7, CHORD_MINOR7, CHORD_MAJOR7}},
+    {"Dreamy Imaj7-iiim7-vim7-IVmaj7",
+     {0, 4, 9, 5},
+     {CHORD_MAJOR7, CHORD_MINOR7, CHORD_MINOR7, CHORD_MAJOR7}},
+    {"Sad vim7-IVmaj7-Imaj7-V",
+     {9, 5, 0, 7},
+     {CHORD_MINOR7, CHORD_MAJOR7, CHORD_MAJOR7, CHORD_MAJOR}},
+    {"Neo-Soul Imaj7-III7-vim7-iim7",
+     {0, 4, 9, 2},
+     {CHORD_MAJOR7, CHORD_DOM7, CHORD_MINOR7, CHORD_MINOR7}},
+    {"Neo-Soul IVmaj7-V7-iiim7-vim7",
+     {5, 7, 4, 9},
+     {CHORD_MAJOR7, CHORD_DOM7, CHORD_MINOR7, CHORD_MINOR7}},
+    {"Neo-Soul bIIImaj7-iim7-vm7-im7",
+     {3, 2, 7, 0},
+     {CHORD_MAJOR7, CHORD_MINOR7, CHORD_MINOR7, CHORD_MINOR7}}
+};
+
+static int lofi_progression_count(void)
+{
+    return (int)(sizeof(LOFI_PROGRESSIONS) / sizeof(LOFI_PROGRESSIONS[0]));
+}
+
+static const LofiProgression *lofi_progression(int idx)
+{
+    if (idx < 0 || idx >= lofi_progression_count())
+        idx = 0;
+    return &LOFI_PROGRESSIONS[idx];
+}
+
+static const char *lofi_progression_name(int idx)
+{
+    return lofi_progression(idx)->name;
+}
+
 /* Four-bar progressions per genre */
-static int bar_root(int key_root, int bar, int genre)
+static int bar_root(int key_root, int bar, int genre, int lofi_prog)
 {
     static const int pop[] = {0, 7, 9, 5};
-    static const int lofi[] = {0, 9, 5, 7};
     static const int rock[] = {0, 5, 7, 0};
     static const int edm[] = {0, 5, 9, 7};
     const int *prog = pop;
 
+    if (genre == GENRE_LOFI)
+        return key_root + lofi_progression(lofi_prog)->roots[bar % 4];
+
     switch (genre)
     {
-    case GENRE_LOFI:
-        prog = lofi;
-        break;
     case GENRE_ROCK:
         prog = rock;
         break;
@@ -273,29 +340,50 @@ static int bar_root(int key_root, int bar, int genre)
     return key_root + prog[bar % 4];
 }
 
-static int chord_is_minor(int genre, int bar)
+static ChordQuality chord_quality(int genre, int bar, int lofi_prog)
 {
+    if (genre == GENRE_LOFI)
+        return lofi_progression(lofi_prog)->qualities[bar % 4];
+
     switch (genre)
     {
     case GENRE_POP:
-        return (bar % 4) == 2; /* vi */
-    case GENRE_LOFI:
-        return (bar % 4) == 1; /* vi */
+        return ((bar % 4) == 2) ? CHORD_MINOR : CHORD_MAJOR; /* vi */
     case GENRE_ROCK:
-        return 0;
+        return CHORD_MAJOR;
     case GENRE_EDM:
-        return (bar % 4) == 2; /* vi */
+        return ((bar % 4) == 2) ? CHORD_MINOR : CHORD_MAJOR; /* vi */
     default:
-        return 0;
+        return CHORD_MAJOR;
     }
 }
 
-/* Chord voicing: root + (minor? 3 : 4) + 7 */
-static void chord_notes(int root, int minor, int out[3])
+static int chord_is_minor(int genre, int bar, int lofi_prog)
 {
+    ChordQuality quality = chord_quality(genre, bar, lofi_prog);
+    return quality == CHORD_MINOR || quality == CHORD_MINOR7;
+}
+
+/* Chord voicing: triad for most genres, seventh chords for lo-fi templates */
+static int chord_notes(int root, ChordQuality quality, int out[4])
+{
+    int minor = (quality == CHORD_MINOR || quality == CHORD_MINOR7);
+
     out[0] = root;
     out[1] = root + (minor ? 3 : 4);
     out[2] = root + 7;
+
+    if (quality == CHORD_DOM7 || quality == CHORD_MINOR7)
+    {
+        out[3] = root + 10;
+        return 4;
+    }
+    if (quality == CHORD_MAJOR7)
+    {
+        out[3] = root + 11;
+        return 4;
+    }
+    return 3;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
@@ -503,10 +591,10 @@ static void gen_guitar(const SongSpec *s, DynBuf *db)
 
     for (int bar = 0; bar < s->bars; bar++)
     {
-        int root = bar_root(s->key_root, bar, s->genre);
-        int minor = chord_is_minor(s->genre, bar);
-        int notes[3];
-        chord_notes(root, minor, notes);
+        int root = bar_root(s->key_root, bar, s->genre, s->lofi_prog);
+        ChordQuality quality = chord_quality(s->genre, bar, s->lofi_prog);
+        int notes[4];
+        int note_count = chord_notes(root, quality, notes);
 
         for (int beat = 0; beat < s->beats_per_bar; beat++)
         {
@@ -547,7 +635,7 @@ static void gen_guitar(const SongSpec *s, DynBuf *db)
             if (!play)
                 continue;
 
-            for (int n = 0; n < 3 && nev + 2 <= MAX_GUITAR_EVENTS; n++)
+            for (int n = 0; n < note_count && nev + 2 <= MAX_GUITAR_EVENTS; n++)
             {
                 evs[nev++] = (GuitarEv){bt + (uint32_t)n * strum, 1, (uint8_t)notes[n], vel};
                 evs[nev++] = (GuitarEv){off + (uint32_t)n * (strum / 2), 0, (uint8_t)notes[n], 0};
@@ -619,8 +707,8 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
     switch (s->genre)
     {
     case GENRE_LOFI:
-        scale = minor_penta;
-        scale_len = 5;
+        scale = major_scale;
+        scale_len = 7;
         break;
     case GENRE_ROCK:
         scale = mixolydian;
@@ -646,7 +734,25 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
 
     for (int bar = 0; bar < s->bars; bar++)
     {
-        int root = bar_root(s->key_root, bar, s->genre);
+        int root = bar_root(s->key_root, bar, s->genre, s->lofi_prog);
+        const int *bar_scale = scale;
+        int bar_scale_len = scale_len;
+
+        if (s->genre == GENRE_LOFI)
+        {
+            if (chord_is_minor(s->genre, bar, s->lofi_prog))
+            {
+                bar_scale = minor_penta;
+                bar_scale_len = 5;
+            }
+            else
+            {
+                bar_scale = major_scale;
+                bar_scale_len = 7;
+            }
+            if (si >= bar_scale_len)
+                si = bar_scale_len - 1;
+        }
 
         for (int e = 0; e < 8 && nev + 2 <= MAX_PIANO_EVENTS; e++)
         {
@@ -672,15 +778,15 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
                 octave = (e >= 4) ? 12 : 0;
             }
 
-            uint8_t note = (uint8_t)(root + scale[si] + octave);
+            uint8_t note = (uint8_t)(root + bar_scale[si] + octave);
 
             evs[nev++] = (PianoEv){on_tick, 1, note, vel};
             evs[nev++] = (PianoEv){off_tick, 0, note, 0};
 
             si += dir;
-            if (si >= scale_len)
+            if (si >= bar_scale_len)
             {
-                si = scale_len - 2;
+                si = bar_scale_len - 2;
                 dir = -1;
             }
             if (si < 0)
@@ -731,6 +837,8 @@ static void child_main(int spec_fd, int track_fd, WorkerRole role)
     printf("[%s] Spec received: BPM=%d bars=%d key=%d genre=%d\n",
            name, spec.bpm, spec.bars, spec.key_root, spec.genre);
     printf("[%s] Genre selected: %s\n", name, genre_name(spec.genre));
+    if (spec.genre == GENRE_LOFI)
+        printf("[%s] Lo-fi progression: %s\n", name, lofi_progression_name(spec.lofi_prog));
     fflush(stdout);
 
     /* 2. Generate MIDI events */
@@ -926,9 +1034,16 @@ int main(void)
     int genre = read_int("Genre", 0, 3);
     printf("Key root MIDI note  (C4=60  D4=62  E4=64  F4=65  G4=67  A4=69  B4=71)\n");
     int key_root = read_int("Key root", 48, 84);
+    int lofi_prog = 0;
+
+    srand((unsigned int)(time(NULL) ^ (unsigned int)getpid()));
+    if (genre == GENRE_LOFI)
+        lofi_prog = rand() % lofi_progression_count();
 
     printf("\n[Parent] Parameters: BPM=%d  bars=%d  genre=%s (%d)  key_root=%d\n\n",
            bpm, bars, genre_name(genre), genre, key_root);
+    if (genre == GENRE_LOFI)
+        printf("[Parent] Lo-fi progression: %s\n\n", lofi_progression_name(lofi_prog));
     fflush(stdout);
 
     /* ── Create pipes ────────────────────────────────────────────────────── */
@@ -1035,6 +1150,7 @@ int main(void)
             .beats_per_bar = 4,
             .key_root = key_root,
             .genre = genre,
+            .lofi_prog = lofi_prog,
             .role = roles[i]};
         safe_write(to_child[i][1], &spec, sizeof(spec), "parent→child spec");
         if (close(to_child[i][1]) < 0)
