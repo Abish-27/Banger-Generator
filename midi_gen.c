@@ -654,114 +654,345 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
 /*  Generator: GUITAR (block chord strums)                                     */
 /* ═══════════════════════════════════════════════════════════════════════════ */
 
-#define MAX_GUITAR_EVENTS 8192
+// #define MAX_GUITAR_EVENTS 8192
 
-typedef struct
-{
-    uint32_t tick;
-    int is_on;
-    uint8_t note;
-    uint8_t vel;
-} GuitarEv;
+// typedef struct
+// {
+//     uint32_t tick;
+//     int is_on;
+//     uint8_t note;
+//     uint8_t vel;
+// } GuitarEv;
 
-static int guitar_ev_cmp(const void *a, const void *b)
-{
+// static int guitar_ev_cmp(const void *a, const void *b)
+// {
+//     const GuitarEv *ga = (const GuitarEv *)a;
+//     const GuitarEv *gb = (const GuitarEv *)b;
+//     if (ga->tick != gb->tick)
+//         return (ga->tick < gb->tick) ? -1 : 1;
+//     return ga->is_on - gb->is_on; /* note-offs first at same tick */
+// }
+
+// static void gen_guitar(const SongSpec *s, DynBuf *db)
+// {
+//     const uint32_t BEAT = TPQ;
+//     const uint8_t CH = CH_GUITAR;
+//     uint8_t prog;
+//     switch (s->genre) {
+//     case GENRE_LOFI: prog = 26; break; /* Jazz Guitar */
+//     case GENRE_ROCK: prog = 29; break; /* Overdriven Guitar */
+//     case GENRE_EDM:  prog = 28; break; /* Muted Guitar */
+//     default:         prog = 27; break; /* Electric Guitar (clean) */
+//     }
+
+//     emit_prog(db, CH, prog);
+
+//     GuitarEv *evs = malloc(MAX_GUITAR_EVENTS * sizeof(GuitarEv));
+//     if (!evs)
+//     {
+//         perror("malloc guitar events");
+//         exit(EXIT_FAILURE);
+//     }
+//     int nev = 0;
+
+//     for (int bar = 0; bar < s->bars; bar++)
+//     {
+//         int root = bar_root(s->key_root, bar, s->genre, s->lofi_prog, s->rock_prog);
+//         ChordQuality quality = chord_quality(s->genre, bar, s->lofi_prog, s->rock_prog);
+//         int notes[4];
+//         int note_count = chord_notes(root, quality, notes);
+
+//         for (int beat = 0; beat < s->beats_per_bar; beat++)
+//         {
+//             uint32_t bt = (uint32_t)(bar * s->beats_per_bar + beat) * BEAT;
+//             uint32_t off = bt + (BEAT * 3) / 4;
+//             uint8_t vel = (beat == 0 || beat == 2) ? 85 : 60;
+//             int play = 1;
+//             uint32_t strum = 10;
+
+//             switch (s->genre)
+//             {
+//             case GENRE_LOFI:
+//                 play = (beat == 0 || beat == 2);
+//                 off = bt + (BEAT * 7) / 8;
+//                 vel = (beat == 0) ? 62 : 52;
+//                 strum = 14;
+//                 break;
+//             case GENRE_ROCK:
+//                 play = 1;
+//                 off = bt + (BEAT * 7) / 8;
+//                 vel = (beat == 0 || beat == 2) ? 112 : 90;
+//                 strum = 6;
+//                 break;
+//             case GENRE_EDM:
+//                 play = 1;
+//                 off = bt + BEAT / 3;
+//                 vel = (beat == 0) ? 82 : 68;
+//                 strum = 4;
+//                 break;
+//             default:
+//                 play = 1;
+//                 off = bt + (BEAT * 3) / 4;
+//                 vel = (beat == 0 || beat == 2) ? 85 : 60;
+//                 strum = 10;
+//                 break;
+//             }
+
+//             if (!play)
+//                 continue;
+
+//             for (int n = 0; n < note_count && nev + 2 <= MAX_GUITAR_EVENTS; n++)
+//             {
+//                 evs[nev++] = (GuitarEv){bt + (uint32_t)n * strum, 1, (uint8_t)notes[n], vel};
+//                 evs[nev++] = (GuitarEv){off + (uint32_t)n * (strum / 2), 0, (uint8_t)notes[n], 0};
+//             }
+//         }
+//     }
+
+//     qsort(evs, (size_t)nev, sizeof(GuitarEv), guitar_ev_cmp);
+
+//     uint32_t cur = 0;
+//     for (int i = 0; i < nev; i++)
+//     {
+//         uint32_t delta = evs[i].tick - cur;
+//         cur = evs[i].tick;
+//         if (evs[i].is_on)
+//             emit_on(db, delta, CH, evs[i].note, evs[i].vel);
+//         else
+//             emit_off(db, delta, CH, evs[i].note);
+//     }
+
+//     free(evs);
+// }
+
+#define STRUM_DOWN  1
+#define STRUM_UP   -1
+ 
+typedef struct {
+    int step;
+    int dir;
+    int vel_pct;
+    int n_strings;
+    int hold_steps;
+} StepDef;
+ 
+#define MAX_GUITAR_EVENTS 16384
+ 
+typedef struct { uint32_t tick; int is_on; uint8_t note; uint8_t vel; } GuitarEv;
+ 
+static int guitar_ev_cmp(const void *a, const void *b) {
     const GuitarEv *ga = (const GuitarEv *)a;
     const GuitarEv *gb = (const GuitarEv *)b;
-    if (ga->tick != gb->tick)
-        return (ga->tick < gb->tick) ? -1 : 1;
-    return ga->is_on - gb->is_on; /* note-offs first at same tick */
+    if (ga->tick != gb->tick) return (ga->tick < gb->tick) ? -1 : 1;
+    return ga->is_on - gb->is_on;
 }
-
-static void gen_guitar(const SongSpec *s, DynBuf *db)
+ 
+static void emit_strum(GuitarEv *evs, int *nev,
+                       uint32_t base_tick,
+                       const int chord[], int n_strings,
+                       int dir, uint8_t vel,
+                       uint32_t spread_ticks,
+                       uint32_t hold_ticks)
 {
-    const uint32_t BEAT = TPQ;
-    const uint8_t CH = CH_GUITAR;
+    for (int s = 0; s < n_strings; s++) {
+        int      idx = (dir == STRUM_DOWN) ? s : (n_strings - 1 - s);
+        uint32_t on  = base_tick + (uint32_t)s * spread_ticks;
+        uint32_t off = base_tick + hold_ticks;
+        if (*nev + 2 >= MAX_GUITAR_EVENTS) break;
+        evs[(*nev)++] = (GuitarEv){ on,  1, (uint8_t)chord[idx], vel };
+        evs[(*nev)++] = (GuitarEv){ off, 0, (uint8_t)chord[idx], 0   };
+    }
+}
+ 
+static unsigned gtr_hash(unsigned bar, unsigned key, unsigned extra) {
+    unsigned h = bar * 2654435761u ^ key * 2246822519u ^ extra * 1000003u;
+    h ^= h >> 16;
+    return h;
+}
+ 
+static void gen_guitar(const SongSpec *s, DynBuf *db) {
+    const uint32_t BEAT = (uint32_t)TPQ;
+    const uint32_t E16  = (uint32_t)(TPQ / 4);
+    const uint8_t  CH   = CH_GUITAR;
+ 
+    /* ── Instrument selection ── */
     uint8_t prog;
+    const char *prog_name;
     switch (s->genre) {
-    case GENRE_LOFI: prog = 26; break; /* Jazz Guitar */
-    case GENRE_ROCK: prog = 29; break; /* Overdriven Guitar */
-    case GENRE_EDM:  prog = 28; break; /* Muted Guitar */
-    default:         prog = 27; break; /* Electric Guitar (clean) */
-    }
-
-    emit_prog(db, CH, prog);
-
-    GuitarEv *evs = malloc(MAX_GUITAR_EVENTS * sizeof(GuitarEv));
-    if (!evs)
-    {
-        perror("malloc guitar events");
-        exit(EXIT_FAILURE);
-    }
-    int nev = 0;
-
-    for (int bar = 0; bar < s->bars; bar++)
-    {
-        int root = bar_root(s->key_root, bar, s->genre, s->lofi_prog, s->rock_prog);
-        ChordQuality quality = chord_quality(s->genre, bar, s->lofi_prog, s->rock_prog);
-        int notes[4];
-        int note_count = chord_notes(root, quality, notes);
-
-        for (int beat = 0; beat < s->beats_per_bar; beat++)
-        {
-            uint32_t bt = (uint32_t)(bar * s->beats_per_bar + beat) * BEAT;
-            uint32_t off = bt + (BEAT * 3) / 4;
-            uint8_t vel = (beat == 0 || beat == 2) ? 85 : 60;
-            int play = 1;
-            uint32_t strum = 10;
-
-            switch (s->genre)
-            {
-            case GENRE_LOFI:
-                play = (beat == 0 || beat == 2);
-                off = bt + (BEAT * 7) / 8;
-                vel = (beat == 0) ? 62 : 52;
-                strum = 14;
-                break;
-            case GENRE_ROCK:
-                play = 1;
-                off = bt + (BEAT * 7) / 8;
-                vel = (beat == 0 || beat == 2) ? 112 : 90;
-                strum = 6;
-                break;
-            case GENRE_EDM:
-                play = 1;
-                off = bt + BEAT / 3;
-                vel = (beat == 0) ? 82 : 68;
-                strum = 4;
-                break;
-            default:
-                play = 1;
-                off = bt + (BEAT * 3) / 4;
-                vel = (beat == 0 || beat == 2) ? 85 : 60;
-                strum = 10;
-                break;
+        case GENRE_LOFI:
+            /* Jazz Guitar (26) for jazzy lofi progressions 0-6,
+               Nylon Guitar (24) for dreamy/neo-soul progressions 7-9 */
+            if (s->lofi_prog >= 7) {
+                prog = 24; prog_name = "Nylon Guitar (GM 24)";
+            } else {
+                prog = 26; prog_name = "Jazz Guitar (GM 26)";
             }
-
-            if (!play)
-                continue;
-
-            for (int n = 0; n < note_count && nev + 2 <= MAX_GUITAR_EVENTS; n++)
-            {
-                evs[nev++] = (GuitarEv){bt + (uint32_t)n * strum, 1, (uint8_t)notes[n], vel};
-                evs[nev++] = (GuitarEv){off + (uint32_t)n * (strum / 2), 0, (uint8_t)notes[n], 0};
+            break;
+        case GENRE_ROCK: {
+            /* Overdriven (29) for classic/garage progressions 0-3, 7
+               Distortion (30) for dark/minor progressions 4-6 */
+            int dark = (s->rock_prog >= 4 && s->rock_prog <= 6);
+            prog      = dark ? 30 : 29;
+            prog_name = dark ? "Distortion Guitar (GM 30)"
+                             : "Overdriven Guitar (GM 29)";
+            break;
+        }
+        case GENRE_EDM:
+            prog = 81; prog_name = "Synth Lead Sawtooth (GM 81)";
+            break;
+        default: /* POP */
+            prog = 25; prog_name = "Acoustic Steel Guitar (GM 25)";
+            break;
+    }
+    emit_prog(db, CH, prog);
+    printf("[Guitar] Instrument: %s\n", prog_name);
+    fflush(stdout);
+ 
+    /* ── Static strum patterns ── */
+ 
+    /* POP: D . . . D U . U D . . . D U . U */
+    static const StepDef pop_steps[] = {
+        {  0, STRUM_DOWN, 100, 3, 3 },
+        {  4, STRUM_DOWN,  80, 3, 2 },
+        {  6, STRUM_UP,    52, 2, 1 },
+        {  7, STRUM_UP,    44, 2, 1 },
+        {  8, STRUM_DOWN,  90, 3, 3 },
+        { 12, STRUM_DOWN,  80, 3, 2 },
+        { 14, STRUM_UP,    52, 2, 1 },
+        { 15, STRUM_UP,    44, 2, 1 },
+    };
+    static const int N_POP = (int)(sizeof(pop_steps)/sizeof(pop_steps[0]));
+ 
+    /* ROCK: D . . D . . D . D . . D . . D . */
+    static const StepDef rock_steps[] = {
+        {  0, STRUM_DOWN, 100, 2, 3 },
+        {  3, STRUM_DOWN,  55, 2, 2 },
+        {  6, STRUM_DOWN,  55, 2, 2 },
+        {  8, STRUM_DOWN, 100, 2, 3 },
+        { 11, STRUM_DOWN,  55, 2, 2 },
+        { 14, STRUM_DOWN,  55, 2, 2 },
+    };
+    static const int N_ROCK = (int)(sizeof(rock_steps)/sizeof(rock_steps[0]));
+ 
+    /* ── Event buffer ── */
+    GuitarEv *evs = malloc(MAX_GUITAR_EVENTS * sizeof(GuitarEv));
+    if (!evs) { perror("malloc guitar events"); exit(EXIT_FAILURE); }
+    int nev = 0;
+ 
+    for (int bar = 0; bar < s->bars; bar++) {
+        int root    = bar_root(s->key_root, bar, s->genre,
+                               s->lofi_prog, s->rock_prog);
+        ChordQuality quality = chord_quality(s->genre, bar,
+                                             s->lofi_prog, s->rock_prog);
+        int chord[4];
+        int n_chord = chord_notes(root, quality, chord);
+        uint32_t bar_start = (uint32_t)(bar * s->beats_per_bar) * BEAT;
+ 
+        unsigned h    = gtr_hash((unsigned)bar, (unsigned)s->key_root,
+                                 (unsigned)(s->lofi_prog + s->rock_prog));
+        int var_a = (int)(h        % 3);
+        int var_b = (int)((h >> 4) % 2);
+        int var_c = (int)((h >> 8) % 3);
+        int var_d = (int)((h >>12) % 4);
+ 
+        /* ── POP ── */
+        if (s->genre == GENRE_POP) {
+            int sus_chord[4];
+            memcpy(sus_chord, chord, (size_t)n_chord * sizeof(int));
+            if (var_b && (bar % 2 == 1) && n_chord >= 2)
+                sus_chord[1] += 1;
+            const int *use_chord = var_b ? sus_chord : chord;
+ 
+            for (int i = 0; i < N_POP; i++) {
+                const StepDef *sd = &pop_steps[i];
+                uint32_t tick   = bar_start + (uint32_t)sd->step * E16;
+                uint8_t  vel    = (uint8_t)(sd->vel_pct * 127 / 100);
+                uint32_t spread = (sd->dir == STRUM_DOWN) ? 8u : 4u;
+                emit_strum(evs, &nev, tick, use_chord, sd->n_strings,
+                           sd->dir, vel, spread,
+                           (uint32_t)sd->hold_steps * E16);
+                /* Variation A: syncopated upstroke at step 10 */
+                if (var_a == 1 && i == 4) {
+                    emit_strum(evs, &nev, bar_start + 10u * E16,
+                               use_chord, 2, STRUM_UP, 48, 4, E16);
+                }
+            }
+ 
+        /* ── LOFI ── */
+        } else if (s->genre == GENRE_LOFI) {
+            /* First strum: beat 1, long sustain */
+            emit_strum(evs, &nev, bar_start, chord, n_chord,
+                       STRUM_DOWN, 68, 22, 6u * E16);
+ 
+            /* Variation D: ghost muted strum at step 6 */
+            if (var_d == 0)
+                emit_strum(evs, &nev, bar_start + 6u * E16, chord, 2,
+                           STRUM_DOWN, 20, 8, E16);
+ 
+            /* Second strum: step 9 or 13 (variation C), with swing */
+            int step2   = (var_c == 2) ? 13 : 9;
+            uint32_t sw = ((step2 % 2) == 1) ? 18u : 0u;
+            emit_strum(evs, &nev, bar_start + (uint32_t)step2 * E16 + sw,
+                       chord, n_chord, STRUM_UP, 50, 22, 4u * E16);
+ 
+        /* ── ROCK ── */
+        } else if (s->genre == GENRE_ROCK) {
+            /* Power chord: root + P5 only regardless of quality */
+            int pwr[3] = { chord[0], chord[0] + 7, chord[0] + 7 };
+ 
+            for (int i = 0; i < N_ROCK; i++) {
+                const StepDef *sd = &rock_steps[i];
+                uint32_t tick = bar_start + (uint32_t)sd->step * E16;
+                uint8_t  vel  = (uint8_t)(sd->vel_pct * 127 / 100);
+                /* Variation E: gallop hit at step 7 before beat-3 entry */
+                if (var_a == 2 && i == 3)
+                    emit_strum(evs, &nev, bar_start + 7u * E16, pwr, 2,
+                               STRUM_DOWN, 42, 4, E16);
+                emit_strum(evs, &nev, tick, pwr, sd->n_strings,
+                           sd->dir, vel, 4,
+                           (uint32_t)sd->hold_steps * E16);
+            }
+ 
+            /* Bass root sustains 2 beats per half-bar */
+            uint8_t bass = (uint8_t)(chord[0] - 12);
+            if (bass >= 24 && nev + 4 < MAX_GUITAR_EVENTS) {
+                evs[nev++] = (GuitarEv){ bar_start,           1, bass, 88 };
+                evs[nev++] = (GuitarEv){ bar_start + BEAT*2,  0, bass, 0  };
+                evs[nev++] = (GuitarEv){ bar_start + BEAT*2,  1, bass, 78 };
+                evs[nev++] = (GuitarEv){ bar_start + BEAT*4,  0, bass, 0  };
+            }
+ 
+        /* ── EDM ── */
+        } else {
+            int arp_up[4]   = { chord[0], chord[0]+7, chord[0]+12,
+                                (n_chord >= 2) ? chord[1] : chord[0]+4 };
+            int arp_down[4] = { arp_up[3], arp_up[2], arp_up[1], arp_up[0] };
+            int *arp        = (bar % 2 == 0) ? arp_up : arp_down;
+ 
+            for (int step = 0; step < 16; step++) {
+                if (var_c == 1 && step == 10) continue; /* Variation F */
+                uint32_t tick = bar_start + (uint32_t)step * E16;
+                uint8_t  nt   = (uint8_t)arp[step % 4];
+                uint8_t  vel  = (step % 4 == 0) ? 92 : 62;
+                if (var_d == 3 && (step == 14 || step == 15)) vel = 108;
+                if (nev + 2 < MAX_GUITAR_EVENTS) {
+                    evs[nev++] = (GuitarEv){ tick,           1, nt, vel };
+                    evs[nev++] = (GuitarEv){ tick + E16 - 8, 0, nt, 0   };
+                }
             }
         }
     }
-
+ 
     qsort(evs, (size_t)nev, sizeof(GuitarEv), guitar_ev_cmp);
-
     uint32_t cur = 0;
-    for (int i = 0; i < nev; i++)
-    {
+    for (int i = 0; i < nev; i++) {
         uint32_t delta = evs[i].tick - cur;
         cur = evs[i].tick;
         if (evs[i].is_on)
-            emit_on(db, delta, CH, evs[i].note, evs[i].vel);
+            emit_on (db, delta, CH, evs[i].note, evs[i].vel);
         else
             emit_off(db, delta, CH, evs[i].note);
     }
-
     free(evs);
 }
 
