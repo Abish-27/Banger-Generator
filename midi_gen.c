@@ -477,6 +477,17 @@ typedef struct
     uint8_t vel;
 } DrumEv;
 
+typedef struct
+{
+    const char *name;
+    uint8_t kick_mask;
+    uint8_t snare_mask;
+    uint8_t open_hat_mask;
+    uint8_t kick_vel;
+    uint8_t snare_vel;
+    uint8_t hat_vel;
+} RockGroove;
+
 static int drum_ev_cmp(const void *a, const void *b)
 {
     const DrumEv *da = (const DrumEv *)a;
@@ -487,11 +498,28 @@ static int drum_ev_cmp(const void *a, const void *b)
     return (da->is_on - db->is_on);
 }
 
+static void push_drum_hit(DrumEv *evs, int *nev, uint32_t tick, uint32_t len,
+                          uint8_t note, uint8_t vel)
+{
+    if (*nev + 2 > MAX_DRUM_EVENTS)
+        return;
+
+    evs[(*nev)++] = (DrumEv){tick, 1, note, vel};
+    evs[(*nev)++] = (DrumEv){tick + len, 0, note, 0};
+}
+
 static void gen_drums(const SongSpec *s, DynBuf *db)
 {
     const uint32_t BEAT = TPQ;
     const uint32_t EIGHT = TPQ / 2;
     const uint8_t CH = CH_DRUMS;
+    static const RockGroove rock_grooves[] = {
+        {"Current", 0x51, 0x44, 0x00, 100, 95, 72},
+        {"Move Along / AAR", 0x59, 0x44, 0x88, 104, 98, 78},
+        {"Incubus-ish", 0x35, 0x44, 0x22, 96, 92, 68},
+        {"Mr. Brightside", 0x33, 0x44, 0x80, 102, 100, 80}
+    };
+    const RockGroove *rock_groove = NULL;
 
     DrumEv *evs = malloc(MAX_DRUM_EVENTS * sizeof(DrumEv));
     if (!evs)
@@ -501,13 +529,19 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
     }
     int nev = 0;
 
+    if (s->genre == GENRE_ROCK)
+    {
+        rock_groove = &rock_grooves[rand() % (int)(sizeof(rock_grooves) / sizeof(rock_grooves[0]))];
+        printf("[Drums] Rock groove: %s\n", rock_groove->name);
+        fflush(stdout);
+    }
+
     for (int bar = 0; bar < s->bars; bar++)
     {
         if (s->genre == GENRE_ROCK && nev + 2 <= MAX_DRUM_EVENTS)
         {
             uint32_t bar_tick = (uint32_t)(bar * s->beats_per_bar) * BEAT;
-            evs[nev++] = (DrumEv){bar_tick, 1, 49, 95};
-            evs[nev++] = (DrumEv){bar_tick + EIGHT, 0, 49, 0};
+            push_drum_hit(evs, &nev, bar_tick, EIGHT, 49, 95);
         }
 
         for (int beat = 0; beat < s->beats_per_bar; beat++)
@@ -524,8 +558,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                 kick_vel = 72;
                 break;
             case GENRE_ROCK:
-                kick = (beat == 0 || beat == 2 || beat == 3);
-                kick_vel = (beat == 0) ? 100 : 88;
+                kick = 0;
                 break;
             case GENRE_EDM:
                 kick = 1;
@@ -538,22 +571,18 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
             }
             if (kick && nev + 2 <= MAX_DRUM_EVENTS)
             {
-                evs[nev++] = (DrumEv){bt, 1, 36, kick_vel};
-                evs[nev++] = (DrumEv){bt + EIGHT, 0, 36, 0};
+                push_drum_hit(evs, &nev, bt, EIGHT, 36, kick_vel);
             }
 
             /* ── Snare ── */
-            if ((beat == 1 || beat == 3) && nev + 2 <= MAX_DRUM_EVENTS)
+            if (s->genre != GENRE_ROCK && (beat == 1 || beat == 3) && nev + 2 <= MAX_DRUM_EVENTS)
             {
                 uint8_t snare_vel = 80;
                 if (s->genre == GENRE_LOFI)
                     snare_vel = 62;
-                if (s->genre == GENRE_ROCK)
-                    snare_vel = 95;
                 if (s->genre == GENRE_EDM)
                     snare_vel = 90;
-                evs[nev++] = (DrumEv){bt, 1, 38, snare_vel};
-                evs[nev++] = (DrumEv){bt + EIGHT, 0, 38, 0};
+                push_drum_hit(evs, &nev, bt, EIGHT, 38, snare_vel);
             }
 
             /* ── Hats: two 8th notes per beat ── */
@@ -562,6 +591,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                 uint32_t ht = bt + (uint32_t)e * EIGHT;
                 uint8_t note = 42;
                 uint8_t vel = 60;
+                int slot = beat * 2 + e;
 
                 switch (s->genre)
                 {
@@ -570,8 +600,17 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                     vel = (e == 0) ? 42 : 52;
                     break;
                 case GENRE_ROCK:
-                    note = 42;
-                    vel = 72;
+                    if (rock_groove != NULL)
+                    {
+                        if ((rock_groove->kick_mask & (1u << slot)) != 0)
+                            push_drum_hit(evs, &nev, ht, EIGHT / 2, 36,
+                                          (slot == 0) ? rock_groove->kick_vel
+                                                      : (uint8_t)(rock_groove->kick_vel - 10));
+                        if ((rock_groove->snare_mask & (1u << slot)) != 0)
+                            push_drum_hit(evs, &nev, ht, EIGHT / 2, 38, rock_groove->snare_vel);
+                        note = ((rock_groove->open_hat_mask & (1u << slot)) != 0) ? 46 : 42;
+                        vel = (note == 46) ? (uint8_t)(rock_groove->hat_vel + 6) : rock_groove->hat_vel;
+                    }
                     break;
                 case GENRE_EDM:
                     note = (e == 1) ? 46 : 42;
@@ -584,8 +623,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                 }
                 if (nev + 2 <= MAX_DRUM_EVENTS)
                 {
-                    evs[nev++] = (DrumEv){ht, 1, note, vel};
-                    evs[nev++] = (DrumEv){ht + EIGHT / 2, 0, note, 0};
+                    push_drum_hit(evs, &nev, ht, EIGHT / 2, note, vel);
                 }
             }
         }
@@ -935,6 +973,8 @@ static void child_main(int spec_fd, int track_fd, WorkerRole role)
 
     printf("[%s] Worker started (PID %d)\n", name, (int)getpid());
     fflush(stdout);
+
+    srand((unsigned int)(time(NULL) ^ (unsigned int)getpid()));
 
     /* 1. Receive spec */
     SongSpec spec;
