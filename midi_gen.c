@@ -34,6 +34,13 @@
 #define NUM_WORKERS 3
 #define OUTPUT_FILE "output.mid"
 #define TPQ 480 /* ticks per quarter note */
+#define BEAT TPQ
+#define EIGHT (TPQ / 2)
+#define BEATS_PER_BAR 4
+
+#define MAX_DRUM_EVENTS 8192
+#define MAX_GUITAR_EVENTS 8192
+#define MAX_PIANO_EVENTS 4096
 
 /* MIDI channel assignments */
 #define CH_PIANO 0
@@ -48,6 +55,7 @@ typedef enum
     WORKER_GUITAR = 1,
     WORKER_PIANO = 2
 } WorkerRole;
+
 typedef enum
 {
     GENRE_POP = 0,
@@ -61,9 +69,8 @@ typedef struct
 {
     int bpm;
     int bars;
-    int beats_per_bar;
-    int key_root; /* MIDI root note, e.g. C4 = 60 */
-    int genre; /* 0=pop, 1=lofi, 2=rock, 3=loony-tunes */
+    int key_root; /* MIDI note number, e.g. C4 = 60 */
+    Genre genre;
     int lofi_prog; /* chosen once per song when genre=lofi */
     int rock_prog; /* chosen once per song when genre=rock */
     int pop_prog;  /* chosen once per song when genre=pop */
@@ -77,7 +84,6 @@ typedef struct
     size_t len;
 } TrackBuf;
 
-/* Dynamic byte buffer */
 typedef struct
 {
     uint8_t *data;
@@ -87,7 +93,6 @@ typedef struct
 
 /* ==================== I/O helpers ==================== */
 
-/* Error-checked write */
 static void safe_write(int fd, const void *buf, size_t n, const char *ctx)
 {
     size_t done = 0;
@@ -103,7 +108,6 @@ static void safe_write(int fd, const void *buf, size_t n, const char *ctx)
     }
 }
 
-/* Error-checked read */
 static void safe_read_exact(int fd, void *buf, size_t n, const char *ctx)
 {
     size_t done = 0;
@@ -163,6 +167,7 @@ static void db_push1(DynBuf *db, uint8_t b)
     db_push(db, &b, 1);
 }
 
+/* Used for delta times in MIDI events */
 static void db_push_vlq(DynBuf *db, uint32_t v)
 {
     uint8_t tmp[4];
@@ -204,7 +209,6 @@ static void emit_off(DynBuf *db, uint32_t delta, uint8_t ch, uint8_t note)
     db_push1(db, 0);
 }
 
-/* Wrap raw event bytes inside a proper MTrk chunk */
 static uint8_t *make_mtrk(const uint8_t *events, size_t ev_len,
                           size_t *out_len)
 {
@@ -237,7 +241,7 @@ static uint8_t *make_mtrk(const uint8_t *events, size_t ev_len,
 
 /* ==================== Music helpers ==================== */
 
-static const char *genre_name(int genre)
+static const char *genre_name(Genre genre)
 {
     switch (genre)
     {
@@ -269,23 +273,18 @@ typedef struct
     const char *name;
     int roots[4];
     ChordQuality qualities[4];
-} LofiProgression;
+} Progression;
 
-typedef struct
+#define PROG_COUNT(arr) ((int)(sizeof(arr) / sizeof((arr)[0])))
+
+static const Progression *prog_get(const Progression *arr, int count, int idx)
 {
-    const char *name;
-    int roots[4];
-    ChordQuality qualities[4];
-} RockProgression;
+    if (idx < 0 || idx >= count)
+        idx = 0;
+    return &arr[idx];
+}
 
-typedef struct
-{
-    const char *name;
-    int roots[4];
-    ChordQuality qualities[4];
-} PopProgression;
-
-static const LofiProgression LOFI_PROGRESSIONS[] = {
+static const Progression LOFI_PROGRESSIONS[] = {
     {"Chill Jazzy Imaj7-vim7-iim7-V7",
      {0, 9, 2, 7},
      {CHORD_MAJOR7, CHORD_MINOR7, CHORD_MINOR7, CHORD_DOM7}},
@@ -315,10 +314,9 @@ static const LofiProgression LOFI_PROGRESSIONS[] = {
      {CHORD_MAJOR7, CHORD_DOM7, CHORD_MINOR7, CHORD_MINOR7}},
     {"Neo-Soul bIIImaj7-iim7-vm7-im7",
      {3, 2, 7, 0},
-     {CHORD_MAJOR7, CHORD_MINOR7, CHORD_MINOR7, CHORD_MINOR7}}
-};
+     {CHORD_MAJOR7, CHORD_MINOR7, CHORD_MINOR7, CHORD_MINOR7}}};
 
-static const RockProgression ROCK_PROGRESSIONS[] = {
+static const Progression ROCK_PROGRESSIONS[] = {
     {"Classic Rock I-V-IV-I",
      {0, 7, 5, 0},
      {CHORD_MAJOR, CHORD_MAJOR, CHORD_MAJOR, CHORD_MAJOR}},
@@ -337,15 +335,14 @@ static const RockProgression ROCK_PROGRESSIONS[] = {
     {"Dark Rock im-bVII-bVI-V",
      {0, 10, 8, 7},
      {CHORD_MINOR, CHORD_MAJOR, CHORD_MAJOR, CHORD_MAJOR}},
-    {"Dark Rock im-bVII-bVI-V (alt)",
-     {0, 10, 8, 7},
+    {"Dark Rock im-V-bVI-bVII",
+     {0, 7, 8, 10},
      {CHORD_MINOR, CHORD_MAJOR, CHORD_MAJOR, CHORD_MAJOR}},
     {"Garage Punk I5-IV5-V5-IV5",
      {0, 5, 7, 5},
-     {CHORD_POWER5, CHORD_POWER5, CHORD_POWER5, CHORD_POWER5}}
-};
+     {CHORD_POWER5, CHORD_POWER5, CHORD_POWER5, CHORD_POWER5}}};
 
-static const PopProgression POP_PROGRESSIONS[] = {
+static const Progression POP_PROGRESSIONS[] = {
     /* Classic pop */
     {"Classic I-V-vi-IV",
      {0, 7, 9, 5},
@@ -373,89 +370,43 @@ static const PopProgression POP_PROGRESSIONS[] = {
      {CHORD_MAJOR7, CHORD_MAJOR7, CHORD_MINOR7, CHORD_MAJOR}},
 };
 
-static int lofi_progression_count(void)
+static const Progression *get_progression(Genre genre, int lofi_prog, int rock_prog, int pop_prog)
 {
-    return (int)(sizeof(LOFI_PROGRESSIONS) / sizeof(LOFI_PROGRESSIONS[0]));
+    switch (genre)
+    {
+    case GENRE_POP:
+        return prog_get(POP_PROGRESSIONS, PROG_COUNT(POP_PROGRESSIONS), pop_prog);
+    case GENRE_LOFI:
+        return prog_get(LOFI_PROGRESSIONS, PROG_COUNT(LOFI_PROGRESSIONS), lofi_prog);
+    case GENRE_ROCK:
+        return prog_get(ROCK_PROGRESSIONS, PROG_COUNT(ROCK_PROGRESSIONS), rock_prog);
+    default:
+        return NULL;
+    }
 }
 
-static const LofiProgression *lofi_progression(int idx)
-{
-    if (idx < 0 || idx >= lofi_progression_count())
-        idx = 0;
-    return &LOFI_PROGRESSIONS[idx];
-}
-
-static const char *lofi_progression_name(int idx)
-{
-    return lofi_progression(idx)->name;
-}
-
-static int rock_progression_count(void)
-{
-    return (int)(sizeof(ROCK_PROGRESSIONS) / sizeof(ROCK_PROGRESSIONS[0]));
-}
-
-static const RockProgression *rock_progression(int idx)
-{
-    if (idx < 0 || idx >= rock_progression_count())
-        idx = 0;
-    return &ROCK_PROGRESSIONS[idx];
-}
-
-static const char *rock_progression_name(int idx)
-{
-    return rock_progression(idx)->name;
-}
-
-static int pop_progression_count(void)
-{
-    return (int)(sizeof(POP_PROGRESSIONS) / sizeof(POP_PROGRESSIONS[0]));
-}
-
-static const PopProgression *pop_progression(int idx)
-{
-    if (idx < 0 || idx >= pop_progression_count())
-        idx = 0;
-    return &POP_PROGRESSIONS[idx];
-}
-
-static const char *pop_progression_name(int idx)
-{
-    return pop_progression(idx)->name;
-}
-
-/* Four-bar progressions per genre */
-static int bar_root(int key_root, int bar, int genre, int lofi_prog, int rock_prog, int pop_prog)
+static int bar_root(int key_root, int bar, Genre genre, int lofi_prog, int rock_prog, int pop_prog)
 {
     static const int loony_tunes[] = {0, 5, 9, 7};
-
-    if (genre == GENRE_POP)
-        return key_root + pop_progression(pop_prog)->roots[bar % 4];
-    if (genre == GENRE_LOFI)
-        return key_root + lofi_progression(lofi_prog)->roots[bar % 4];
-    if (genre == GENRE_ROCK)
-        return key_root + rock_progression(rock_prog)->roots[bar % 4];
+    const Progression *p = get_progression(genre, lofi_prog, rock_prog, pop_prog);
+    if (p)
+        return key_root + p->roots[bar % 4];
     if (genre == GENRE_LOONY_TUNES)
         return key_root + loony_tunes[bar % 4];
-
     return key_root;
 }
 
-static ChordQuality chord_quality(int genre, int bar, int lofi_prog, int rock_prog, int pop_prog)
+static ChordQuality chord_quality(Genre genre, int bar, int lofi_prog, int rock_prog, int pop_prog)
 {
-    if (genre == GENRE_POP)
-        return pop_progression(pop_prog)->qualities[bar % 4];
-    if (genre == GENRE_LOFI)
-        return lofi_progression(lofi_prog)->qualities[bar % 4];
-    if (genre == GENRE_ROCK)
-        return rock_progression(rock_prog)->qualities[bar % 4];
+    const Progression *p = get_progression(genre, lofi_prog, rock_prog, pop_prog);
+    if (p)
+        return p->qualities[bar % 4];
     if (genre == GENRE_LOONY_TUNES)
         return ((bar % 4) == 2) ? CHORD_MINOR : CHORD_MAJOR;
-
     return CHORD_MAJOR;
 }
 
-static int chord_is_minor(int genre, int bar, int lofi_prog, int rock_prog, int pop_prog)
+static int chord_is_minor(Genre genre, int bar, int lofi_prog, int rock_prog, int pop_prog)
 {
     ChordQuality quality = chord_quality(genre, bar, lofi_prog, rock_prog, pop_prog);
     return quality == CHORD_MINOR || quality == CHORD_MINOR7;
@@ -489,33 +440,44 @@ static int chord_notes(int root, ChordQuality quality, int out[4])
     return 3;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*  Generator: DRUMS                                                            */
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*
- * GM drum note map (channel 9):
- *   36 = Bass Drum, 38 = Snare, 42 = Closed HH, 46 = Open HH, 49 = Crash
- *
- * Patterns:
- *   Pop  – kick 1&3, snare 2&4, closed HH every 8th note
- *   Lo-fi– softer backbeat with airy off-beat hats
- *   Rock – punchier kick/snare with a crash at bar starts
- *   Loony-Tunes – four-on-the-floor kick, clap/snare 2&4, open hats on off-beats
- *
- * Strategy: collect (abs_tick, type, note, vel) events into an array sorted
- * by time, then emit with proper deltas.  This avoids unsigned-subtraction
- * wrapping when multiple voices land on the same beat.
- */
-
-#define MAX_DRUM_EVENTS 8192
-
+/* one MIDI event: used by all three generators */
 typedef struct
 {
-    uint32_t tick;
-    int is_on;
+    uint32_t tick; /* absolute tick position */
+    int is_on;     /* 1 = note-on, 0 = note-off */
     uint8_t note;
     uint8_t vel;
-} DrumEv;
+} MidiEv;
+
+/* sort by tick; note-offs before note-ons at the same tick to avoid stuck notes */
+static int midi_ev_cmp(const void *a, const void *b)
+{
+    const MidiEv *ma = (const MidiEv *)a;
+    const MidiEv *mb = (const MidiEv *)b;
+    if (ma->tick != mb->tick)
+        return (ma->tick < mb->tick) ? -1 : 1;
+    return ma->is_on - mb->is_on;
+}
+
+/* sort, emit deltas into db, and free evs */
+static void flush_events(DynBuf *db, MidiEv *evs, int nev, uint8_t ch)
+{
+    qsort(evs, (size_t)nev, sizeof(MidiEv), midi_ev_cmp);
+    uint32_t cur = 0;
+    for (int i = 0; i < nev; i++)
+    {
+        uint32_t delta = evs[i].tick - cur;
+        cur = evs[i].tick;
+        if (evs[i].is_on)
+            emit_on(db, delta, ch, evs[i].note, evs[i].vel);
+        else
+            emit_off(db, delta, ch, evs[i].note);
+    }
+    free(evs);
+}
+
+/* ==================== Drums ==================== */
+/* GM channel 9: 36=Bass Drum, 38=Snare, 42=Closed HH, 46=Open HH, 49=Crash */
 
 typedef struct
 {
@@ -528,40 +490,27 @@ typedef struct
     uint8_t hat_vel;
 } RockGroove;
 
-static int drum_ev_cmp(const void *a, const void *b)
-{
-    const DrumEv *da = (const DrumEv *)a;
-    const DrumEv *db = (const DrumEv *)b;
-    if (da->tick != db->tick)
-        return (da->tick < db->tick) ? -1 : 1;
-    /* note-offs before note-ons at same tick to avoid stuck notes */
-    return (da->is_on - db->is_on);
-}
-
-static void push_drum_hit(DrumEv *evs, int *nev, uint32_t tick, uint32_t len,
+static void push_drum_hit(MidiEv *evs, int *nev, uint32_t tick, uint32_t len,
                           uint8_t note, uint8_t vel)
 {
     if (*nev + 2 > MAX_DRUM_EVENTS)
         return;
 
-    evs[(*nev)++] = (DrumEv){tick, 1, note, vel};
-    evs[(*nev)++] = (DrumEv){tick + len, 0, note, 0};
+    evs[(*nev)++] = (MidiEv){tick, 1, note, vel};
+    evs[(*nev)++] = (MidiEv){tick + len, 0, note, 0};
 }
 
 static void gen_drums(const SongSpec *s, DynBuf *db)
 {
-    const uint32_t BEAT = TPQ;
-    const uint32_t EIGHT = TPQ / 2;
     const uint8_t CH = CH_DRUMS;
     static const RockGroove rock_grooves[] = {
         {"Current", 0x51, 0x44, 0x00, 100, 95, 72},
         {"Move Along / AAR", 0x59, 0x44, 0x88, 104, 98, 78},
         {"Incubus-ish", 0x35, 0x44, 0x22, 96, 92, 68},
-        {"Mr. Brightside", 0x33, 0x44, 0x80, 102, 100, 80}
-    };
+        {"Mr. Brightside", 0x33, 0x44, 0x80, 102, 100, 80}};
     const RockGroove *rock_groove = NULL;
 
-    DrumEv *evs = malloc(MAX_DRUM_EVENTS * sizeof(DrumEv));
+    MidiEv *evs = malloc(MAX_DRUM_EVENTS * sizeof(MidiEv));
     if (!evs)
     {
         perror("malloc drum events");
@@ -580,15 +529,15 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
     {
         if (s->genre == GENRE_ROCK && nev + 2 <= MAX_DRUM_EVENTS)
         {
-            uint32_t bar_tick = (uint32_t)(bar * s->beats_per_bar) * BEAT;
+            uint32_t bar_tick = (uint32_t)(bar * BEATS_PER_BAR) * BEAT;
             push_drum_hit(evs, &nev, bar_tick, EIGHT, 49, 95);
         }
 
-        for (int beat = 0; beat < s->beats_per_bar; beat++)
+        for (int beat = 0; beat < BEATS_PER_BAR; beat++)
         {
-            uint32_t bt = (uint32_t)(bar * s->beats_per_bar + beat) * BEAT;
+            uint32_t bt = (uint32_t)(bar * BEATS_PER_BAR + beat) * BEAT;
 
-            /* ── Kick ── */
+            /* kick */
             int kick = 0;
             uint8_t kick_vel = 90;
             switch (s->genre)
@@ -619,7 +568,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                     push_drum_hit(evs, &nev, bt, EIGHT, 36, 74);
             }
 
-            /* ── Snare ── */
+            /* snare */
             if (s->genre != GENRE_ROCK && (beat == 1 || beat == 3) && nev + 2 <= MAX_DRUM_EVENTS)
             {
                 uint8_t snare_vel = 80;
@@ -630,7 +579,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                 push_drum_hit(evs, &nev, bt, EIGHT, 38, snare_vel);
             }
 
-            /* ── Hats: two 8th notes per beat ── */
+            /* hats: two 8th notes per beat */
             for (int e = 0; e < 2; e++)
             {
                 uint32_t ht = bt + (uint32_t)e * EIGHT;
@@ -674,60 +623,34 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
         }
     }
 
-    qsort(evs, (size_t)nev, sizeof(DrumEv), drum_ev_cmp);
-
-    uint32_t cur = 0;
-    for (int i = 0; i < nev; i++)
-    {
-        uint32_t delta = evs[i].tick - cur;
-        cur = evs[i].tick;
-        if (evs[i].is_on)
-            emit_on(db, delta, CH, evs[i].note, evs[i].vel);
-        else
-            emit_off(db, delta, CH, evs[i].note);
-    }
-
-    free(evs);
+    flush_events(db, evs, nev, CH);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*  Generator: GUITAR (block chord strums)                                     */
-/* ═══════════════════════════════════════════════════════════════════════════ */
-
-#define MAX_GUITAR_EVENTS 8192
-
-typedef struct
-{
-    uint32_t tick;
-    int is_on;
-    uint8_t note;
-    uint8_t vel;
-} GuitarEv;
-
-static int guitar_ev_cmp(const void *a, const void *b)
-{
-    const GuitarEv *ga = (const GuitarEv *)a;
-    const GuitarEv *gb = (const GuitarEv *)b;
-    if (ga->tick != gb->tick)
-        return (ga->tick < gb->tick) ? -1 : 1;
-    return ga->is_on - gb->is_on; /* note-offs first at same tick */
-}
+/* ==================== Guitar ==================== */
 
 static void gen_guitar(const SongSpec *s, DynBuf *db)
 {
-    const uint32_t BEAT = TPQ;
     const uint8_t CH = CH_GUITAR;
     uint8_t prog;
-    switch (s->genre) {
-    case GENRE_LOFI: prog = 26; break; /* Jazz Guitar */
-    case GENRE_ROCK: prog = 29; break; /* Overdriven Guitar */
-    case GENRE_LOONY_TUNES:  prog = 28; break; /* Muted Guitar */
-    default:         prog = 27; break; /* Electric Guitar (clean) */
+    switch (s->genre)
+    {
+    case GENRE_LOFI:
+        prog = 26;
+        break; /* Jazz Guitar */
+    case GENRE_ROCK:
+        prog = 29;
+        break; /* Overdriven Guitar */
+    case GENRE_LOONY_TUNES:
+        prog = 28;
+        break; /* Muted Guitar */
+    default:
+        prog = 27;
+        break; /* Electric Guitar (clean) */
     }
 
     emit_prog(db, CH, prog);
 
-    GuitarEv *evs = malloc(MAX_GUITAR_EVENTS * sizeof(GuitarEv));
+    MidiEv *evs = malloc(MAX_GUITAR_EVENTS * sizeof(MidiEv));
     if (!evs)
     {
         perror("malloc guitar events");
@@ -742,9 +665,9 @@ static void gen_guitar(const SongSpec *s, DynBuf *db)
         int notes[4];
         int note_count = chord_notes(root, quality, notes);
 
-        for (int beat = 0; beat < s->beats_per_bar; beat++)
+        for (int beat = 0; beat < BEATS_PER_BAR; beat++)
         {
-            uint32_t bt = (uint32_t)(bar * s->beats_per_bar + beat) * BEAT;
+            uint32_t bt = (uint32_t)(bar * BEATS_PER_BAR + beat) * BEAT;
             uint32_t off = bt + (BEAT * 3) / 4;
             uint8_t vel = (beat == 0 || beat == 2) ? 85 : 60;
             int play = 1;
@@ -783,50 +706,16 @@ static void gen_guitar(const SongSpec *s, DynBuf *db)
 
             for (int n = 0; n < note_count && nev + 2 <= MAX_GUITAR_EVENTS; n++)
             {
-                evs[nev++] = (GuitarEv){bt + (uint32_t)n * strum, 1, (uint8_t)notes[n], vel};
-                evs[nev++] = (GuitarEv){off + (uint32_t)n * (strum / 2), 0, (uint8_t)notes[n], 0};
+                evs[nev++] = (MidiEv){bt + (uint32_t)n * strum, 1, (uint8_t)notes[n], vel};
+                evs[nev++] = (MidiEv){off + (uint32_t)n * (strum / 2), 0, (uint8_t)notes[n], 0};
             }
         }
     }
 
-    qsort(evs, (size_t)nev, sizeof(GuitarEv), guitar_ev_cmp);
-
-    uint32_t cur = 0;
-    for (int i = 0; i < nev; i++)
-    {
-        uint32_t delta = evs[i].tick - cur;
-        cur = evs[i].tick;
-        if (evs[i].is_on)
-            emit_on(db, delta, CH, evs[i].note, evs[i].vel);
-        else
-            emit_off(db, delta, CH, evs[i].note);
-    }
-
-    free(evs);
+    flush_events(db, evs, nev, CH);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*  Generator: PIANO (chord-anchored melody with genre-specific rhythms)       */
-/* ═══════════════════════════════════════════════════════════════════════════ */
-
-#define MAX_PIANO_EVENTS 4096
-
-typedef struct
-{
-    uint32_t tick;
-    int is_on;
-    uint8_t note;
-    uint8_t vel;
-} PianoEv;
-
-static int piano_ev_cmp(const void *a, const void *b)
-{
-    const PianoEv *pa = (const PianoEv *)a;
-    const PianoEv *pb = (const PianoEv *)b;
-    if (pa->tick != pb->tick)
-        return (pa->tick < pb->tick) ? -1 : 1;
-    return pa->is_on - pb->is_on;
-}
+/* ==================== Piano ==================== */
 
 /* Simple deterministic hash for variety without stdlib rand */
 static unsigned piano_hash(unsigned a, unsigned b)
@@ -842,38 +731,38 @@ static unsigned piano_hash(unsigned a, unsigned b)
  * Multiple patterns per genre to rotate through bars.
  */
 static const int POP_PATTERNS[][8] = {
-    {1, 2, 1, 0, 1, 2, 2, 0},  /* melody + rests */
-    {1, 0, 2, 1, 0, 1, 2, 1},  /* syncopated */
-    {1, 2, 0, 1, 2, 0, 1, 2},  /* breathing room */
-    {1, 1, 2, 0, 1, 2, 0, 1},  /* front-loaded */
+    {1, 2, 1, 0, 1, 2, 2, 0}, /* melody + rests */
+    {1, 0, 2, 1, 0, 1, 2, 1}, /* syncopated */
+    {1, 2, 0, 1, 2, 0, 1, 2}, /* breathing room */
+    {1, 1, 2, 0, 1, 2, 0, 1}, /* front-loaded */
 };
 
 static const int LOFI_PATTERNS[][8] = {
-    {1, 0, 2, 0, 1, 0, 2, 0},  /* sparse, airy */
-    {1, 0, 0, 2, 1, 0, 0, 1},  /* very sparse */
-    {0, 1, 0, 2, 0, 1, 0, 0},  /* off-beat feel */
-    {1, 2, 0, 0, 1, 0, 2, 0},  /* dreamy */
+    {1, 0, 2, 0, 1, 0, 2, 0}, /* sparse, airy */
+    {1, 0, 0, 2, 1, 0, 0, 1}, /* very sparse */
+    {0, 1, 0, 2, 0, 1, 0, 0}, /* off-beat feel */
+    {1, 2, 0, 0, 1, 0, 2, 0}, /* dreamy */
 };
 
 static const int ROCK_PATTERNS[][8] = {
-    {1, 1, 2, 1, 1, 2, 1, 0},  /* driving */
-    {1, 2, 1, 2, 1, 0, 1, 1},  /* energetic */
-    {1, 0, 1, 1, 2, 1, 0, 1},  /* punchy gaps */
-    {1, 1, 0, 1, 1, 2, 2, 1},  /* heavy */
+    {1, 1, 2, 1, 1, 2, 1, 0}, /* driving */
+    {1, 2, 1, 2, 1, 0, 1, 1}, /* energetic */
+    {1, 0, 1, 1, 2, 1, 0, 1}, /* punchy gaps */
+    {1, 1, 0, 1, 1, 2, 2, 1}, /* heavy */
 };
 
 static const int ROCK_CONTOURS[][8] = {
-    {0, 2, 1, 2, 0, 2, 1, 0},  /* chord punches */
-    {0, 1, 2, 1, 0, 1, 3, 2},  /* climbing hook */
-    {0, 0, 2, 0, 0, 1, 2, 0},  /* pedal tone */
-    {2, 1, 0, 1, 2, 3, 1, 0},  /* brighter lead-in */
+    {0, 2, 1, 2, 0, 2, 1, 0}, /* chord punches */
+    {0, 1, 2, 1, 0, 1, 3, 2}, /* climbing hook */
+    {0, 0, 2, 0, 0, 1, 2, 0}, /* pedal tone */
+    {2, 1, 0, 1, 2, 3, 1, 0}, /* brighter lead-in */
 };
 
 static const int LOONY_TUNES_PATTERNS[][8] = {
-    {1, 0, 1, 0, 1, 0, 1, 0},  /* pulsing */
-    {1, 1, 0, 1, 1, 0, 1, 0},  /* arpeggiated feel */
-    {1, 0, 1, 1, 0, 1, 0, 1},  /* offbeat accents */
-    {0, 1, 0, 1, 1, 0, 1, 1},  /* delayed entry */
+    {1, 0, 1, 0, 1, 0, 1, 0}, /* pulsing */
+    {1, 1, 0, 1, 1, 0, 1, 0}, /* arpeggiated feel */
+    {1, 0, 1, 1, 0, 1, 0, 1}, /* offbeat accents */
+    {0, 1, 0, 1, 1, 0, 1, 1}, /* delayed entry */
 };
 
 static void gen_piano(const SongSpec *s, DynBuf *db)
@@ -882,49 +771,43 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
     static const int minor_penta[] = {0, 3, 5, 7, 10};
     static const int major_penta[] = {0, 2, 4, 7, 9};
     static const int mixolydian[] = {0, 2, 4, 5, 7, 9, 10};
-    const int *scale = major_scale;
-    int scale_len = 7;
-
-    const uint32_t EIGHT = TPQ / 2;
-    const uint8_t CH = CH_PIANO;
-
-    const int (*patterns)[8] = POP_PATTERNS;
-    int num_patterns = 4;
-
+    const int *scale;
+    int scale_len;
+    const int (*patterns)[8];
     uint8_t prog;
-    switch (s->genre) {
-    case GENRE_LOFI: prog = 5; break; /* Electric Piano 2 */
-    case GENRE_ROCK: prog = 0; break; /* Acoustic Grand Piano */
-    case GENRE_LOONY_TUNES:  prog = 5; break; /* Electric Piano 2 */
-    default:         prog = 0; break; /* Acoustic Grand Piano */
-    }
-    emit_prog(db, CH, prog);
+
+    const uint8_t CH = CH_PIANO;
 
     switch (s->genre)
     {
     case GENRE_LOFI:
+        prog = 5; /* Electric Piano 2 */
         scale = major_scale;
         scale_len = 7;
         patterns = LOFI_PATTERNS;
         break;
     case GENRE_ROCK:
+        prog = 0; /* Acoustic Grand Piano */
         scale = mixolydian;
         scale_len = 7;
         patterns = ROCK_PATTERNS;
         break;
     case GENRE_LOONY_TUNES:
+        prog = 5; /* Electric Piano 2 */
         scale = major_penta;
         scale_len = 5;
         patterns = LOONY_TUNES_PATTERNS;
         break;
     default:
+        prog = 0; /* Acoustic Grand Piano */
         scale = major_scale;
         scale_len = 7;
         patterns = POP_PATTERNS;
         break;
     }
+    emit_prog(db, CH, prog);
 
-    PianoEv *evs = malloc(MAX_PIANO_EVENTS * sizeof(PianoEv));
+    MidiEv *evs = malloc(MAX_PIANO_EVENTS * sizeof(MidiEv));
     if (!evs)
     {
         perror("malloc piano events");
@@ -949,17 +832,23 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
         }
 
         /* pick a rhythm pattern based on bar number for variety */
-        int pat_idx = (int)(piano_hash((unsigned)bar, (unsigned)s->key_root) % (unsigned)num_patterns);
+        int pat_idx = (int)(piano_hash((unsigned)bar, (unsigned)s->key_root) % 4u);
         const int *pat = patterns[pat_idx];
-        int rock_contour_idx = (int)(piano_hash((unsigned)bar, (unsigned)(s->rock_prog + s->key_root)) % 4u);
-        const int *rock_contour = ROCK_CONTOURS[rock_contour_idx];
+
+        int rock_contour_idx = 0;
+        const int *rock_contour = NULL;
+        if (s->genre == GENRE_ROCK)
+        {
+            rock_contour_idx = (int)(piano_hash((unsigned)bar, (unsigned)(s->rock_prog + s->key_root)) % 4u);
+            rock_contour = ROCK_CONTOURS[rock_contour_idx];
+        }
 
         for (int e = 0; e < 8 && nev + 2 <= MAX_PIANO_EVENTS; e++)
         {
             if (pat[e] == 0)
                 continue; /* rest */
 
-            uint32_t on_tick = (uint32_t)(bar * s->beats_per_bar * TPQ) + (uint32_t)e * EIGHT;
+            uint32_t on_tick = (uint32_t)(bar * BEATS_PER_BAR * BEAT) + (uint32_t)e * EIGHT;
             uint32_t off_tick = on_tick + (EIGHT * 3) / 4;
             uint8_t vel = (e % 2 == 0) ? 80 : 60;
             int octave = 0;
@@ -1030,30 +919,15 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
                 note = (uint8_t)(root + bar_scale[si] + octave);
             }
 
-            evs[nev++] = (PianoEv){on_tick, 1, note, vel};
-            evs[nev++] = (PianoEv){off_tick, 0, note, 0};
+            evs[nev++] = (MidiEv){on_tick, 1, note, vel};
+            evs[nev++] = (MidiEv){off_tick, 0, note, 0};
         }
     }
 
-    qsort(evs, (size_t)nev, sizeof(PianoEv), piano_ev_cmp);
-
-    uint32_t cur = 0;
-    for (int i = 0; i < nev; i++)
-    {
-        uint32_t delta = evs[i].tick - cur;
-        cur = evs[i].tick;
-        if (evs[i].is_on)
-            emit_on(db, delta, CH, evs[i].note, evs[i].vel);
-        else
-            emit_off(db, delta, CH, evs[i].note);
-    }
-
-    free(evs);
+    flush_events(db, evs, nev, CH);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*  Child process entry point                                                   */
-/* ═══════════════════════════════════════════════════════════════════════════ */
+/* ==================== Child process ==================== */
 static void child_main(int spec_fd, int track_fd, WorkerRole role)
 {
     const char *name = (role == WORKER_DRUMS)    ? "Drums"
@@ -1074,13 +948,14 @@ static void child_main(int spec_fd, int track_fd, WorkerRole role)
         exit(EXIT_FAILURE);
     }
 
-    printf("[%s] Spec received: BPM=%d bars=%d key=%d genre=%d\n",
-           name, spec.bpm, spec.bars, spec.key_root, spec.genre);
-    printf("[%s] Genre selected: %s\n", name, genre_name(spec.genre));
+    printf("[%s] Spec received: BPM=%d bars=%d key=%d genre=%s\n",
+           name, spec.bpm, spec.bars, spec.key_root, genre_name(spec.genre));
+    if (spec.genre == GENRE_POP)
+        printf("[%s] Pop progression: %s\n", name, prog_get(POP_PROGRESSIONS, PROG_COUNT(POP_PROGRESSIONS), spec.pop_prog)->name);
     if (spec.genre == GENRE_LOFI)
-        printf("[%s] Lo-fi progression: %s\n", name, lofi_progression_name(spec.lofi_prog));
+        printf("[%s] Lo-fi progression: %s\n", name, prog_get(LOFI_PROGRESSIONS, PROG_COUNT(LOFI_PROGRESSIONS), spec.lofi_prog)->name);
     if (spec.genre == GENRE_ROCK)
-        printf("[%s] Rock progression: %s\n", name, rock_progression_name(spec.rock_prog));
+        printf("[%s] Rock progression: %s\n", name, prog_get(ROCK_PROGRESSIONS, PROG_COUNT(ROCK_PROGRESSIONS), spec.rock_prog)->name);
     fflush(stdout);
 
     /* 2. Generate MIDI events */
@@ -1124,9 +999,7 @@ static void child_main(int spec_fd, int track_fd, WorkerRole role)
     exit(EXIT_SUCCESS);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*  Write the final SMF Type-1 file                                             */
-/* ═══════════════════════════════════════════════════════════════════════════ */
+/* ==================== Write MIDI file ==================== */
 static void write_midi_file(const char *path, int bpm,
                             const TrackBuf tracks[NUM_WORKERS])
 {
@@ -1241,9 +1114,7 @@ static void try_play_with_timidity(const char *path)
     fflush(stdout);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*  Input helper                                                                */
-/* ═══════════════════════════════════════════════════════════════════════════ */
+/* ==================== Input helpers ==================== */
 static int read_int(const char *prompt, int lo, int hi)
 {
     int v;
@@ -1266,18 +1137,29 @@ static int note_to_midi(const char *s)
     /* semitone offsets: C D E F G A B */
     static const int semitones[] = {0, 2, 4, 5, 7, 9, 11};
     static const char *names = "CDEFGAB";
-    if (!s || !s[0]) return -1;
+    if (!s || !s[0])
+        return -1;
 
     char letter = (char)(s[0] >= 'a' ? s[0] - 32 : s[0]);
     const char *pos = strchr(names, letter);
-    if (!pos) return -1;
+    if (!pos)
+        return -1;
 
     int semi = semitones[pos - names];
     int i = 1;
-    if (s[i] == '#') { semi++; i++; }
-    else if (s[i] == 'b') { semi--; i++; }
+    if (s[i] == '#')
+    {
+        semi++;
+        i++;
+    }
+    else if (s[i] == 'b')
+    {
+        semi--;
+        i++;
+    }
 
-    if (s[i] < '0' || s[i] > '9') return -1;
+    if (s[i] < '0' || s[i] > '9')
+        return -1;
     int octave = s[i] - '0';
     int midi = (octave + 1) * 12 + semi;
     return (midi >= 0 && midi <= 127) ? midi : -1;
@@ -1302,23 +1184,20 @@ static int read_note(void)
             if (midi >= 48 && midi <= 84)
                 return midi;
         }
-        printf("  Invalid – try a note like C4, G#3, Bb2 (octaves 4–7).\n");
+        printf("  Invalid – try a note like C4, G#3, Bb2 (C3 to C6).\n");
         int c;
         while ((c = getchar()) != '\n' && c != EOF)
             ;
     }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════ */
-/*  main                                                                        */
-/* ═══════════════════════════════════════════════════════════════════════════ */
+/* ==================== main ==================== */
 int main(void)
 {
-    printf("╔══════════════════════════════════════╗\n");
-    printf("║       MIDI Banger Generator          ║\n");
-    printf("╚══════════════════════════════════════╝\n\n");
+    printf("╔════════════════════════════════════╗\n");
+    printf("║       MIDI Banger Generator        ║\n");
+    printf("╚════════════════════════════════════╝\n\n");
 
-    /* ── Collect parameters ─────────────────────────────────────────────── */
     int bpm = read_int("BPM (tempo)", 40, 240);
     printf("\n");
 
@@ -1326,35 +1205,35 @@ int main(void)
     printf("\n");
 
     printf("Genre  0=Pop  1=Lo-fi  2=Rock  3=Loony-Tunes\n");
-    int genre = read_int("Genre", 0, 3);
+    Genre genre = (Genre)read_int("Genre", 0, 3);
     printf("\n");
 
     int key_root = read_note();
     printf("\n");
     int lofi_prog = 0;
     int rock_prog = 0;
-    int pop_prog  = 0;
+    int pop_prog = 0;
 
     srand((unsigned int)(time(NULL) ^ (unsigned int)getpid()));
     if (genre == GENRE_POP)
-        pop_prog  = rand() % pop_progression_count();
+        pop_prog = rand() % PROG_COUNT(POP_PROGRESSIONS);
     if (genre == GENRE_LOFI)
-        lofi_prog = rand() % lofi_progression_count();
+        lofi_prog = rand() % PROG_COUNT(LOFI_PROGRESSIONS);
     if (genre == GENRE_ROCK)
-        rock_prog = rand() % rock_progression_count();
+        rock_prog = rand() % PROG_COUNT(ROCK_PROGRESSIONS);
 
-    printf("──────────────── LOG ────────────────\n");
+    printf("--- LOG ---\n");
     printf("[Parent] BPM=%d  bars=%d  genre=%s  key=%d\n",
            bpm, bars, genre_name(genre), key_root);
     if (genre == GENRE_POP)
-        printf("[Parent] Pop progression: %s\n", pop_progression_name(pop_prog));
+        printf("[Parent] Pop progression: %s\n", prog_get(POP_PROGRESSIONS, PROG_COUNT(POP_PROGRESSIONS), pop_prog)->name);
     if (genre == GENRE_LOFI)
-        printf("[Parent] Lo-fi progression: %s\n", lofi_progression_name(lofi_prog));
+        printf("[Parent] Lo-fi progression: %s\n", prog_get(LOFI_PROGRESSIONS, PROG_COUNT(LOFI_PROGRESSIONS), lofi_prog)->name);
     if (genre == GENRE_ROCK)
-        printf("[Parent] Rock progression: %s\n", rock_progression_name(rock_prog));
+        printf("[Parent] Rock progression: %s\n", prog_get(ROCK_PROGRESSIONS, PROG_COUNT(ROCK_PROGRESSIONS), rock_prog)->name);
     fflush(stdout);
 
-    /* ── Create pipes ────────────────────────────────────────────────────── */
+    /* create pipes */
     int to_child[NUM_WORKERS][2];
     int from_child[NUM_WORKERS][2];
 
@@ -1374,7 +1253,7 @@ int main(void)
     printf("[Parent] %d pipe pairs created\n", NUM_WORKERS * 2);
     fflush(stdout);
 
-    /* ── Fork all three workers concurrently ─────────────────────────────── */
+    /* fork workers */
     pid_t pids[NUM_WORKERS];
     WorkerRole roles[NUM_WORKERS] = {WORKER_DRUMS, WORKER_GUITAR, WORKER_PIANO};
 
@@ -1389,7 +1268,7 @@ int main(void)
 
         if (pid == 0)
         {
-            /* ── Child: close every pipe end except its own two ── */
+            /* close every pipe end except this child's own two */
             for (int j = 0; j < NUM_WORKERS; j++)
             {
                 /* Parent side of to_child: child never writes */
@@ -1432,7 +1311,7 @@ int main(void)
         fflush(stdout);
     }
 
-    /* ── Parent: close child-side pipe ends ──────────────────────────────── */
+    /* parent closes the child-side ends it no longer needs */
     for (int i = 0; i < NUM_WORKERS; i++)
     {
         if (close(to_child[i][0]) < 0)
@@ -1447,7 +1326,7 @@ int main(void)
         }
     }
 
-    /* ── Send spec to each worker ─────────────────────────────────────────── */
+    /* send spec to each worker */
     printf("\n[Parent] Sending specs to all workers...\n");
     fflush(stdout);
     for (int i = 0; i < NUM_WORKERS; i++)
@@ -1455,12 +1334,11 @@ int main(void)
         SongSpec spec = {
             .bpm = bpm,
             .bars = bars,
-            .beats_per_bar = 4,
             .key_root = key_root,
             .genre = genre,
             .lofi_prog = lofi_prog,
             .rock_prog = rock_prog,
-            .pop_prog  = pop_prog,
+            .pop_prog = pop_prog,
             .role = roles[i]};
         safe_write(to_child[i][1], &spec, sizeof(spec), "parent→child spec");
         if (close(to_child[i][1]) < 0)
@@ -1472,7 +1350,7 @@ int main(void)
         fflush(stdout);
     }
 
-    /* ── Receive track data from each worker ─────────────────────────────── */
+    /* collect track data from each worker */
     printf("\n[Parent] Collecting MIDI tracks from workers...\n");
     fflush(stdout);
 
@@ -1506,7 +1384,7 @@ int main(void)
         fflush(stdout);
     }
 
-    /* ── Wait for all workers (prevent zombies) ───────────────────────────── */
+    /* wait for all workers to exit */
     printf("\n[Parent] Waiting for worker processes to exit...\n");
     fflush(stdout);
     for (int i = 0; i < NUM_WORKERS; i++)
@@ -1525,12 +1403,11 @@ int main(void)
         fflush(stdout);
     }
 
-    /* ── Merge and write MIDI file ────────────────────────────────────────── */
+    /* write MIDI file */
     printf("\n[Parent] Merging tracks → %s ...\n", OUTPUT_FILE);
     fflush(stdout);
     write_midi_file(OUTPUT_FILE, bpm, tracks);
 
-    /* ── Free all heap memory ────────────────────────────────────────────── */
     for (int i = 0; i < NUM_WORKERS; i++)
     {
         free(tracks[i].data);
@@ -1539,14 +1416,12 @@ int main(void)
 
     try_play_with_timidity(OUTPUT_FILE);
 
-    printf("─────────────────────────────────────\n");
+    printf("-------------------------------------\n");
     printf("\n");
-    printf("╔══════════════════════════════════════╗\n");
-    printf("║         Banger Generated!            ║\n");
-    printf("║                                      ║\n");
-    printf("║   MIDI  ->  output.mid               ║\n");
-    printf("║   Audio ->  output.ogg               ║\n");
-    printf("╚══════════════════════════════════════╝\n\n");
+    printf("╔════════════════════════════════════╗\n");
+    printf("║         Banger Generated!          ║\n");
+    printf("║            output.mid              ║\n");
+    printf("╚════════════════════════════════════╝\n\n");
     fflush(stdout);
     return EXIT_SUCCESS;
 }
