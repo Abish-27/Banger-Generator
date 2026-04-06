@@ -84,7 +84,6 @@ typedef struct
     size_t len;
 } TrackBuf;
 
-/* Dynamic byte buffer */
 typedef struct
 {
     uint8_t *data;
@@ -94,7 +93,6 @@ typedef struct
 
 /* ==================== I/O helpers ==================== */
 
-/* Error-checked write */
 static void safe_write(int fd, const void *buf, size_t n, const char *ctx)
 {
     size_t done = 0;
@@ -110,7 +108,6 @@ static void safe_write(int fd, const void *buf, size_t n, const char *ctx)
     }
 }
 
-/* Error-checked read */
 static void safe_read_exact(int fd, void *buf, size_t n, const char *ctx)
 {
     size_t done = 0;
@@ -1201,7 +1198,6 @@ int main(void)
     printf("║       MIDI Banger Generator        ║\n");
     printf("╚════════════════════════════════════╝\n\n");
 
-    /* collect parameters */
     int bpm = read_int("BPM (tempo)", 40, 240);
     printf("\n");
 
@@ -1412,7 +1408,6 @@ int main(void)
     fflush(stdout);
     write_midi_file(OUTPUT_FILE, bpm, tracks);
 
-    /* free track buffers */
     for (int i = 0; i < NUM_WORKERS; i++)
     {
         free(tracks[i].data);
