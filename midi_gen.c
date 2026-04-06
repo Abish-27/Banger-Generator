@@ -31,12 +31,16 @@
 
 /* ==================== Constants ==================== */
 
-#define NUM_WORKERS 3
-#define OUTPUT_FILE "output.mid"
-#define TPQ 480 /* ticks per quarter note */
-#define BEAT TPQ
-#define EIGHT (TPQ / 2)
+#define NUM_WORKERS   3
+#define OUTPUT_FILE   "output.mid"
+#define TPQ           480  /* ticks per quarter note */
+#define BEAT          TPQ
+#define EIGHT         (TPQ / 2)
 #define BEATS_PER_BAR 4
+
+#define MAX_DRUM_EVENTS   8192
+#define MAX_GUITAR_EVENTS 8192
+#define MAX_PIANO_EVENTS  4096
 
 /* MIDI channel assignments */
 #define CH_PIANO 0
@@ -377,34 +381,31 @@ static const Progression POP_PROGRESSIONS[] = {
      {CHORD_MAJOR7, CHORD_MAJOR7, CHORD_MINOR7, CHORD_MAJOR}},
 };
 
-/* Four-bar progressions per genre */
+static const Progression *get_progression(Genre genre, int lofi_prog, int rock_prog, int pop_prog)
+{
+    switch (genre)
+    {
+    case GENRE_POP:  return prog_get(POP_PROGRESSIONS,  PROG_COUNT(POP_PROGRESSIONS),  pop_prog);
+    case GENRE_LOFI: return prog_get(LOFI_PROGRESSIONS, PROG_COUNT(LOFI_PROGRESSIONS), lofi_prog);
+    case GENRE_ROCK: return prog_get(ROCK_PROGRESSIONS, PROG_COUNT(ROCK_PROGRESSIONS), rock_prog);
+    default:         return NULL;
+    }
+}
+
 static int bar_root(int key_root, int bar, Genre genre, int lofi_prog, int rock_prog, int pop_prog)
 {
     static const int loony_tunes[] = {0, 5, 9, 7};
-
-    if (genre == GENRE_POP)
-        return key_root + prog_get(POP_PROGRESSIONS, PROG_COUNT(POP_PROGRESSIONS), pop_prog)->roots[bar % 4];
-    if (genre == GENRE_LOFI)
-        return key_root + prog_get(LOFI_PROGRESSIONS, PROG_COUNT(LOFI_PROGRESSIONS), lofi_prog)->roots[bar % 4];
-    if (genre == GENRE_ROCK)
-        return key_root + prog_get(ROCK_PROGRESSIONS, PROG_COUNT(ROCK_PROGRESSIONS), rock_prog)->roots[bar % 4];
-    if (genre == GENRE_LOONY_TUNES)
-        return key_root + loony_tunes[bar % 4];
-
+    const Progression *p = get_progression(genre, lofi_prog, rock_prog, pop_prog);
+    if (p) return key_root + p->roots[bar % 4];
+    if (genre == GENRE_LOONY_TUNES) return key_root + loony_tunes[bar % 4];
     return key_root;
 }
 
 static ChordQuality chord_quality(Genre genre, int bar, int lofi_prog, int rock_prog, int pop_prog)
 {
-    if (genre == GENRE_POP)
-        return prog_get(POP_PROGRESSIONS, PROG_COUNT(POP_PROGRESSIONS), pop_prog)->qualities[bar % 4];
-    if (genre == GENRE_LOFI)
-        return prog_get(LOFI_PROGRESSIONS, PROG_COUNT(LOFI_PROGRESSIONS), lofi_prog)->qualities[bar % 4];
-    if (genre == GENRE_ROCK)
-        return prog_get(ROCK_PROGRESSIONS, PROG_COUNT(ROCK_PROGRESSIONS), rock_prog)->qualities[bar % 4];
-    if (genre == GENRE_LOONY_TUNES)
-        return ((bar % 4) == 2) ? CHORD_MINOR : CHORD_MAJOR;
-
+    const Progression *p = get_progression(genre, lofi_prog, rock_prog, pop_prog);
+    if (p) return p->qualities[bar % 4];
+    if (genre == GENRE_LOONY_TUNES) return ((bar % 4) == 2) ? CHORD_MINOR : CHORD_MAJOR;
     return CHORD_MAJOR;
 }
 
@@ -442,31 +443,29 @@ static int chord_notes(int root, ChordQuality quality, int out[4])
     return 3;
 }
 
-/* --- DRUMS ---
- * GM channel 9: 36=Bass Drum, 38=Snare, 42=Closed HH, 46=Open HH, 49=Crash
- * Events are collected with absolute ticks, sorted, then emitted with deltas.
- */
-
-#define MAX_DRUM_EVENTS 8192
-#define MAX_GUITAR_EVENTS 8192
-#define MAX_PIANO_EVENTS 4096
-
+/* one MIDI event: used by all three generators */
 typedef struct
 {
-    uint32_t tick;
-    int is_on;
+    uint32_t tick;  /* absolute tick position */
+    int is_on;      /* 1 = note-on, 0 = note-off */
     uint8_t note;
     uint8_t vel;
 } MidiEv;
 
+/* sort by tick; note-offs before note-ons at the same tick to avoid stuck notes */
 static int midi_ev_cmp(const void *a, const void *b)
 {
     const MidiEv *ma = (const MidiEv *)a;
     const MidiEv *mb = (const MidiEv *)b;
     if (ma->tick != mb->tick)
         return (ma->tick < mb->tick) ? -1 : 1;
-    return ma->is_on - mb->is_on; /* note-offs before note-ons at same tick */
+    return ma->is_on - mb->is_on;
 }
+
+/* --- DRUMS ---
+ * GM channel 9: 36=Bass Drum, 38=Snare, 42=Closed HH, 46=Open HH, 49=Crash
+ * Events are collected with absolute ticks, sorted, then emitted with deltas
+ */
 
 typedef struct
 {
