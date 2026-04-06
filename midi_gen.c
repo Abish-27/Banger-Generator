@@ -1,19 +1,22 @@
 /*
- * NEEDS EDIT
- * 
- * midi_gen.c  –  MIDI Song Generator using pipes & concurrent child processes
+ * midi_gen.c
  *
- * Architecture:
- *   Parent (controller) reads user parameters, spawns 3 worker processes
- *   concurrently (drums, guitar, piano), sends each a spec over a pipe,
- *   collects the generated MIDI track data back via pipes, then merges
- *   all tracks into a single Standard MIDI File (SMF format 1).
+ * A MIDI song generator that uses pipes and multiple child processes.
  *
- * Pipe layout (per worker i):
- *   to_child[i][0/1]   – parent writes spec  → child reads spec
- *   from_child[i][0/1] – child writes track   → parent reads track
+ * The parent process reads the user's song settings, then starts three
+ * worker processes to build the drums, guitar, and piano parts in parallel.
+ * It sends each worker the song information through a pipe, reads the
+ * finished track data back through another pipe, and combines everything
+ * into one Standard MIDI File.
  *
- * MIDI output: output.mid  (SMF Type 1, 4 tracks: tempo + drums/guitar/piano)
+ * Pipe setup for each worker:
+ *   to_child[i]   - parent sends song settings to the child
+ *   from_child[i] - child sends generated track data back to the parent
+ *
+ * Output:
+ *   output.mid
+ *   MIDI format 1 with four tracks total:
+ *   one tempo track, plus drums, guitar, and piano
  */
 
 #include <stdio.h>
