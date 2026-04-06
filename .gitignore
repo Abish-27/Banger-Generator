@@ -1,3 +1,6 @@
+# Debug symbols
+*.dSYM/
+
 # Compiled executables
 midi_gen
 guitar_test

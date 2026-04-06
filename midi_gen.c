@@ -1,4 +1,6 @@
 /*
+ * NEEDS EDIT
+ * 
  * midi_gen.c  –  MIDI Song Generator using pipes & concurrent child processes
  *
  * Architecture:
