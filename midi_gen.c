@@ -48,7 +48,7 @@ typedef enum
     GENRE_POP = 0,
     GENRE_LOFI = 1,
     GENRE_ROCK = 2,
-    GENRE_EDM = 3
+    GENRE_LOONY_TUNES = 3
 } Genre;
 
 /* read by child as raw bytes over pipe */
@@ -58,7 +58,7 @@ typedef struct
     int bars;
     int beats_per_bar;
     int key_root; /* MIDI root note, e.g. C4 = 60 */
-    int genre; /* 0=pop, 1=lofi, 2=rock, 3=edm */
+    int genre; /* 0=pop, 1=lofi, 2=rock, 3=loony-tunes */
     int lofi_prog; /* chosen once per song when genre=lofi */
     int rock_prog; /* chosen once per song when genre=rock */
     WorkerRole role;
@@ -241,8 +241,8 @@ static const char *genre_name(int genre)
         return "Lo-fi";
     case GENRE_ROCK:
         return "Rock";
-    case GENRE_EDM:
-        return "EDM";
+    case GENRE_LOONY_TUNES:
+        return "Loony-Tunes";
     default:
         return "Unknown";
     }
@@ -371,7 +371,7 @@ static int bar_root(int key_root, int bar, int genre, int lofi_prog, int rock_pr
 {
     static const int pop[] = {0, 7, 9, 5};
     static const int rock[] = {0, 5, 7, 0};
-    static const int edm[] = {0, 5, 9, 7};
+    static const int loony_tunes[] = {0, 5, 9, 7};
     const int *prog = pop;
 
     if (genre == GENRE_LOFI)
@@ -381,8 +381,8 @@ static int bar_root(int key_root, int bar, int genre, int lofi_prog, int rock_pr
 
     switch (genre)
     {
-    case GENRE_EDM:
-        prog = edm;
+    case GENRE_LOONY_TUNES:
+        prog = loony_tunes;
         break;
     case GENRE_ROCK:
         prog = rock;
@@ -408,7 +408,7 @@ static ChordQuality chord_quality(int genre, int bar, int lofi_prog, int rock_pr
         return ((bar % 4) == 2) ? CHORD_MINOR : CHORD_MAJOR; /* vi */
     case GENRE_ROCK:
         return CHORD_MAJOR;
-    case GENRE_EDM:
+    case GENRE_LOONY_TUNES:
         return ((bar % 4) == 2) ? CHORD_MINOR : CHORD_MAJOR; /* vi */
     default:
         return CHORD_MAJOR;
@@ -460,7 +460,7 @@ static int chord_notes(int root, ChordQuality quality, int out[4])
  *   Pop  – kick 1&3, snare 2&4, closed HH every 8th note
  *   Lo-fi– softer backbeat with airy off-beat hats
  *   Rock – punchier kick/snare with a crash at bar starts
- *   EDM  – four-on-the-floor kick, clap/snare 2&4, open hats on off-beats
+ *   Loony-Tunes – four-on-the-floor kick, clap/snare 2&4, open hats on off-beats
  *
  * Strategy: collect (abs_tick, type, note, vel) events into an array sorted
  * by time, then emit with proper deltas.  This avoids unsigned-subtraction
@@ -560,7 +560,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
             case GENRE_ROCK:
                 kick = 0;
                 break;
-            case GENRE_EDM:
+            case GENRE_LOONY_TUNES:
                 kick = 1;
                 kick_vel = 112;
                 break;
@@ -585,7 +585,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                 uint8_t snare_vel = 80;
                 if (s->genre == GENRE_LOFI)
                     snare_vel = 62;
-                if (s->genre == GENRE_EDM)
+                if (s->genre == GENRE_LOONY_TUNES)
                     snare_vel = 90;
                 push_drum_hit(evs, &nev, bt, EIGHT, 38, snare_vel);
             }
@@ -617,7 +617,7 @@ static void gen_drums(const SongSpec *s, DynBuf *db)
                         vel = (note == 46) ? (uint8_t)(rock_groove->hat_vel + 6) : rock_groove->hat_vel;
                     }
                     break;
-                case GENRE_EDM:
+                case GENRE_LOONY_TUNES:
                     note = (e == 1) ? 46 : 42;
                     vel = (e == 1) ? 74 : 46;
                     break;
@@ -681,7 +681,7 @@ static void gen_guitar(const SongSpec *s, DynBuf *db)
     switch (s->genre) {
     case GENRE_LOFI: prog = 26; break; /* Jazz Guitar */
     case GENRE_ROCK: prog = 29; break; /* Overdriven Guitar */
-    case GENRE_EDM:  prog = 28; break; /* Muted Guitar */
+    case GENRE_LOONY_TUNES:  prog = 28; break; /* Muted Guitar */
     default:         prog = 27; break; /* Electric Guitar (clean) */
     }
 
@@ -724,7 +724,7 @@ static void gen_guitar(const SongSpec *s, DynBuf *db)
                 vel = (beat == 0 || beat == 2) ? 112 : 90;
                 strum = 6;
                 break;
-            case GENRE_EDM:
+            case GENRE_LOONY_TUNES:
                 play = 1;
                 off = bt + BEAT / 3;
                 vel = (beat == 0) ? 82 : 68;
@@ -829,7 +829,7 @@ static const int ROCK_CONTOURS[][8] = {
     {2, 1, 0, 1, 2, 3, 1, 0},  /* brighter lead-in */
 };
 
-static const int EDM_PATTERNS[][8] = {
+static const int LOONY_TUNES_PATTERNS[][8] = {
     {1, 0, 1, 0, 1, 0, 1, 0},  /* pulsing */
     {1, 1, 0, 1, 1, 0, 1, 0},  /* arpeggiated feel */
     {1, 0, 1, 1, 0, 1, 0, 1},  /* offbeat accents */
@@ -855,7 +855,7 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
     switch (s->genre) {
     case GENRE_LOFI: prog = 5; break; /* Electric Piano 2 */
     case GENRE_ROCK: prog = 0; break; /* Acoustic Grand Piano */
-    case GENRE_EDM:  prog = 5; break; /* Electric Piano 2 */
+    case GENRE_LOONY_TUNES:  prog = 5; break; /* Electric Piano 2 */
     default:         prog = 0; break; /* Acoustic Grand Piano */
     }
     emit_prog(db, CH, prog);
@@ -872,10 +872,10 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
         scale_len = 7;
         patterns = ROCK_PATTERNS;
         break;
-    case GENRE_EDM:
+    case GENRE_LOONY_TUNES:
         scale = major_penta;
         scale_len = 5;
-        patterns = EDM_PATTERNS;
+        patterns = LOONY_TUNES_PATTERNS;
         break;
     default:
         scale = major_scale;
@@ -936,7 +936,7 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
                 vel = (e % 2 == 0) ? 60 : 46;
                 octave = -12;
             }
-            else if (s->genre == GENRE_EDM)
+            else if (s->genre == GENRE_LOONY_TUNES)
             {
                 off_tick = on_tick + EIGHT / 2;
                 vel = (e % 2 == 0) ? 92 : 72;
@@ -1232,7 +1232,7 @@ int main(void)
     /* ── Collect parameters ─────────────────────────────────────────────── */
     int bpm = read_int("BPM (tempo)", 40, 240);
     int bars = read_int("Number of bars", 1, 64);
-    printf("Genre  0=Pop  1=Lo-fi  2=Rock  3=EDM\n");
+    printf("Genre  0=Pop  1=Lo-fi  2=Rock  3=Loony-Tunes\n");
     int genre = read_int("Genre", 0, 3);
     printf("Key root MIDI note  (C4=60  D4=62  E4=64  F4=65  G4=67  A4=69  B4=71)\n");
     int key_root = read_int("Key root", 48, 84);
