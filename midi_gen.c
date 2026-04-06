@@ -1423,10 +1423,10 @@ int main(void)
 
     printf("-------------------------------------\n");
     printf("\n");
-    printf("╔══════════════════════════════════════╗\n");
-    printf("║         Banger Generated!            ║\n");
-    printf("║   output.mid                         ║\n");
-    printf("╚══════════════════════════════════════╝\n\n");
+    printf("╔════════════════════════════════════╗\n");
+    printf("║         Banger Generated!          ║\n");
+    printf("║            output.mid              ║\n");
+    printf("╚════════════════════════════════════╝\n\n");
     fflush(stdout);
     return EXIT_SUCCESS;
 }
