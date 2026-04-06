@@ -9,7 +9,7 @@ A C program that generates randomised backing tracks using concurrent child proc
 The parent process reads user parameters (BPM, genre, key, bars), then spawns **3 child processes** concurrently over pipes — one for each instrument. Each child independently generates a MIDI track and pipes it back to the parent, which merges them into a single `.mid` file and renders it to `.ogg` via TiMidity++.
 
 ```
-                        ┌─────────────────────────┐
+                        ┌───────────────────────────┐
                         │       PARENT PROCESS      │
                         │                           │
                         │  Reads: BPM, Genre,       │
@@ -18,21 +18,21 @@ The parent process reads user parameters (BPM, genre, key, bars), then spawns **
                                      │
                     fork() × 3  +  pipes
                                      │
-          ┌──────────────────────────┼──────────────────────────┐
-          │                          │                          │
-          ▼                          ▼                          ▼
- ┌────────────────┐        ┌────────────────┐        ┌────────────────┐
- │  CHILD: DRUMS  │        │ CHILD: GUITAR  │        │  CHILD: PIANO  │
- │                │        │                │        │                │
- │ Kick, snare,   │        │ Strummed chord │        │ Melodic runs   │
- │ hi-hat pattern │        │ progressions   │        │ chord voicing  │
- └───────┬────────┘        └───────┬────────┘        └───────┬────────┘
-         │                         │                          │
-         │    MIDI track bytes (via pipe)                     │
-         └─────────────────────────┼──────────────────────────┘
-                                   │
-                                   ▼
-                        ┌─────────────────────────┐
+         ┌───────────────────────────┼─────────────────────────┐
+         │                           │                         │
+         ▼                           ▼                         ▼
+ ┌────────────────┐          ┌────────────────┐        ┌────────────────┐
+ │  CHILD: DRUMS  │          │ CHILD: GUITAR  │        │  CHILD: PIANO  │
+ │                │          │                │        │                │
+ │ Kick, snare,   │          │ Strummed chord │        │ Melodic runs   │
+ │ hi-hat pattern │          │ progressions   │        │ chord voicing  │
+ └───────┬────────┘          └───────┬────────┘        └───────┬────────┘
+         │                           │                         │
+         │    MIDI track bytes (via pipe)                      │
+         └───────────────────────────┼─────────────────────────┘
+                                     │
+                                     ▼
+                        ┌───────────────────────────┐
                         │       PARENT PROCESS      │
                         │                           │
                         │  Merges 3 tracks into     │
@@ -40,7 +40,7 @@ The parent process reads user parameters (BPM, genre, key, bars), then spawns **
                         │                           │
                         │  Calls TiMidity++ to      │
                         │  render → output.ogg      │
-                        └─────────────────────────┘
+                        └───────────────────────────┘
 ```
 
 ---
