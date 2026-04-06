@@ -1,0 +1,12 @@
+# Debug symbols
+*.dSYM/
+
+# Compiled executables
+midi_gen
+guitar_test
+test_drums
+
+# Generated audio/MIDI output
+*.mid
+*.ogg
+*.wav
