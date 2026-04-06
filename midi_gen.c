@@ -63,6 +63,7 @@ typedef struct
     int genre; /* 0=pop, 1=lofi, 2=rock, 3=loony-tunes */
     int lofi_prog; /* chosen once per song when genre=lofi */
     int rock_prog; /* chosen once per song when genre=rock */
+    int pop_prog;  /* chosen once per song when genre=pop */
     WorkerRole role;
 } SongSpec;
 
@@ -274,6 +275,13 @@ typedef struct
     ChordQuality qualities[4];
 } RockProgression;
 
+typedef struct
+{
+    const char *name;
+    int roots[4];
+    ChordQuality qualities[4];
+} PopProgression;
+
 static const LofiProgression LOFI_PROGRESSIONS[] = {
     {"Chill Jazzy Imaj7-vim7-iim7-V7",
      {0, 9, 2, 7},
@@ -334,6 +342,34 @@ static const RockProgression ROCK_PROGRESSIONS[] = {
      {CHORD_POWER5, CHORD_POWER5, CHORD_POWER5, CHORD_POWER5}}
 };
 
+static const PopProgression POP_PROGRESSIONS[] = {
+    /* Classic pop */
+    {"Classic I-V-vi-IV",
+     {0, 7, 9, 5},
+     {CHORD_MAJOR, CHORD_MAJOR, CHORD_MINOR, CHORD_MAJOR}},
+    /* Bright / uplifting */
+    {"Bright I-IV-vi-V",
+     {0, 5, 9, 7},
+     {CHORD_MAJOR, CHORD_MAJOR, CHORD_MINOR, CHORD_MAJOR}},
+    {"Bright I-IV-V-vi",
+     {0, 5, 7, 9},
+     {CHORD_MAJOR, CHORD_MAJOR, CHORD_MAJOR, CHORD_MINOR}},
+    /* Emotional */
+    {"Emotional vi-IV-I-V",
+     {9, 5, 0, 7},
+     {CHORD_MINOR, CHORD_MAJOR, CHORD_MAJOR, CHORD_MAJOR}},
+    {"Emotional vi-IV-I-III",
+     {9, 5, 0, 4},
+     {CHORD_MINOR, CHORD_MAJOR, CHORD_MAJOR, CHORD_MAJOR}},
+    /* Softer / dreamy (with 7ths) */
+    {"Dreamy Imaj7-V-vim7-IVmaj7",
+     {0, 7, 9, 5},
+     {CHORD_MAJOR7, CHORD_MAJOR, CHORD_MINOR7, CHORD_MAJOR7}},
+    {"Dreamy Imaj7-IVmaj7-vim7-V",
+     {0, 5, 9, 7},
+     {CHORD_MAJOR7, CHORD_MAJOR7, CHORD_MINOR7, CHORD_MAJOR}},
+};
+
 static int lofi_progression_count(void)
 {
     return (int)(sizeof(LOFI_PROGRESSIONS) / sizeof(LOFI_PROGRESSIONS[0]));
@@ -368,58 +404,57 @@ static const char *rock_progression_name(int idx)
     return rock_progression(idx)->name;
 }
 
-/* Four-bar progressions per genre */
-static int bar_root(int key_root, int bar, int genre, int lofi_prog, int rock_prog)
+static int pop_progression_count(void)
 {
-    static const int pop[] = {0, 7, 9, 5};
-    static const int rock[] = {0, 5, 7, 0};
-    static const int loony_tunes[] = {0, 5, 9, 7};
-    const int *prog = pop;
+    return (int)(sizeof(POP_PROGRESSIONS) / sizeof(POP_PROGRESSIONS[0]));
+}
 
+static const PopProgression *pop_progression(int idx)
+{
+    if (idx < 0 || idx >= pop_progression_count())
+        idx = 0;
+    return &POP_PROGRESSIONS[idx];
+}
+
+static const char *pop_progression_name(int idx)
+{
+    return pop_progression(idx)->name;
+}
+
+/* Four-bar progressions per genre */
+static int bar_root(int key_root, int bar, int genre, int lofi_prog, int rock_prog, int pop_prog)
+{
+    static const int loony_tunes[] = {0, 5, 9, 7};
+
+    if (genre == GENRE_POP)
+        return key_root + pop_progression(pop_prog)->roots[bar % 4];
     if (genre == GENRE_LOFI)
         return key_root + lofi_progression(lofi_prog)->roots[bar % 4];
     if (genre == GENRE_ROCK)
         return key_root + rock_progression(rock_prog)->roots[bar % 4];
+    if (genre == GENRE_LOONY_TUNES)
+        return key_root + loony_tunes[bar % 4];
 
-    switch (genre)
-    {
-    case GENRE_LOONY_TUNES:
-        prog = loony_tunes;
-        break;
-    case GENRE_ROCK:
-        prog = rock;
-        break;
-    default:
-        prog = pop;
-        break;
-    }
-
-    return key_root + prog[bar % 4];
+    return key_root;
 }
 
-static ChordQuality chord_quality(int genre, int bar, int lofi_prog, int rock_prog)
+static ChordQuality chord_quality(int genre, int bar, int lofi_prog, int rock_prog, int pop_prog)
 {
+    if (genre == GENRE_POP)
+        return pop_progression(pop_prog)->qualities[bar % 4];
     if (genre == GENRE_LOFI)
         return lofi_progression(lofi_prog)->qualities[bar % 4];
     if (genre == GENRE_ROCK)
         return rock_progression(rock_prog)->qualities[bar % 4];
+    if (genre == GENRE_LOONY_TUNES)
+        return ((bar % 4) == 2) ? CHORD_MINOR : CHORD_MAJOR;
 
-    switch (genre)
-    {
-    case GENRE_POP:
-        return ((bar % 4) == 2) ? CHORD_MINOR : CHORD_MAJOR; /* vi */
-    case GENRE_ROCK:
-        return CHORD_MAJOR;
-    case GENRE_LOONY_TUNES:
-        return ((bar % 4) == 2) ? CHORD_MINOR : CHORD_MAJOR; /* vi */
-    default:
-        return CHORD_MAJOR;
-    }
+    return CHORD_MAJOR;
 }
 
-static int chord_is_minor(int genre, int bar, int lofi_prog, int rock_prog)
+static int chord_is_minor(int genre, int bar, int lofi_prog, int rock_prog, int pop_prog)
 {
-    ChordQuality quality = chord_quality(genre, bar, lofi_prog, rock_prog);
+    ChordQuality quality = chord_quality(genre, bar, lofi_prog, rock_prog, pop_prog);
     return quality == CHORD_MINOR || quality == CHORD_MINOR7;
 }
 
@@ -699,8 +734,8 @@ static void gen_guitar(const SongSpec *s, DynBuf *db)
 
     for (int bar = 0; bar < s->bars; bar++)
     {
-        int root = bar_root(s->key_root, bar, s->genre, s->lofi_prog, s->rock_prog);
-        ChordQuality quality = chord_quality(s->genre, bar, s->lofi_prog, s->rock_prog);
+        int root = bar_root(s->key_root, bar, s->genre, s->lofi_prog, s->rock_prog, s->pop_prog);
+        ChordQuality quality = chord_quality(s->genre, bar, s->lofi_prog, s->rock_prog, s->pop_prog);
         int notes[4];
         int note_count = chord_notes(root, quality, notes);
 
@@ -896,15 +931,15 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
 
     for (int bar = 0; bar < s->bars; bar++)
     {
-        int root = bar_root(s->key_root, bar, s->genre, s->lofi_prog, s->rock_prog);
-        ChordQuality quality = chord_quality(s->genre, bar, s->lofi_prog, s->rock_prog);
+        int root = bar_root(s->key_root, bar, s->genre, s->lofi_prog, s->rock_prog, s->pop_prog);
+        ChordQuality quality = chord_quality(s->genre, bar, s->lofi_prog, s->rock_prog, s->pop_prog);
         int chord[4];
         int chord_len = chord_notes(root, quality, chord);
 
         const int *bar_scale = scale;
         int bar_scale_len = scale_len;
 
-        if (chord_is_minor(s->genre, bar, s->lofi_prog, s->rock_prog))
+        if (chord_is_minor(s->genre, bar, s->lofi_prog, s->rock_prog, s->pop_prog))
         {
             bar_scale = minor_penta;
             bar_scale_len = 5;
@@ -1295,8 +1330,11 @@ int main(void)
     printf("\n");
     int lofi_prog = 0;
     int rock_prog = 0;
+    int pop_prog  = 0;
 
     srand((unsigned int)(time(NULL) ^ (unsigned int)getpid()));
+    if (genre == GENRE_POP)
+        pop_prog  = rand() % pop_progression_count();
     if (genre == GENRE_LOFI)
         lofi_prog = rand() % lofi_progression_count();
     if (genre == GENRE_ROCK)
@@ -1305,6 +1343,8 @@ int main(void)
     printf("──────────────── LOG ────────────────\n");
     printf("[Parent] BPM=%d  bars=%d  genre=%s  key=%d\n",
            bpm, bars, genre_name(genre), key_root);
+    if (genre == GENRE_POP)
+        printf("[Parent] Pop progression: %s\n", pop_progression_name(pop_prog));
     if (genre == GENRE_LOFI)
         printf("[Parent] Lo-fi progression: %s\n", lofi_progression_name(lofi_prog));
     if (genre == GENRE_ROCK)
@@ -1417,6 +1457,7 @@ int main(void)
             .genre = genre,
             .lofi_prog = lofi_prog,
             .rock_prog = rock_prog,
+            .pop_prog  = pop_prog,
             .role = roles[i]};
         safe_write(to_child[i][1], &spec, sizeof(spec), "parent→child spec");
         if (close(to_child[i][1]) < 0)
