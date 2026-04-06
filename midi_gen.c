@@ -134,7 +134,6 @@ static void safe_read_exact(int fd, void *buf, size_t n, const char *ctx)
 
 /* ==================== DynBuf helpers ==================== */
 
-/* Initialize a dynamic buffer */
 static void db_init(DynBuf *db)
 {
     db->cap = 512;
@@ -147,7 +146,6 @@ static void db_init(DynBuf *db)
     }
 }
 
-/* Push bytes into a dynamic buffer */
 static void db_push(DynBuf *db, const uint8_t *bytes, size_t n)
 {
     if (db->len + n > db->cap)
@@ -167,7 +165,6 @@ static void db_push(DynBuf *db, const uint8_t *bytes, size_t n)
     db->len += n;
 }
 
-/* Push a single byte into a dynamic buffer */
 static void db_push1(DynBuf *db, uint8_t b)
 {
     db_push(db, &b, 1);
@@ -191,7 +188,6 @@ static void db_push_vlq(DynBuf *db, uint32_t v)
 
 /* ==================== MIDI event emitters ==================== */
 
-/* Sets the instrument */
 static void emit_prog(DynBuf *db, uint8_t ch, uint8_t prog)
 {
     db_push_vlq(db, 0);
@@ -199,7 +195,6 @@ static void emit_prog(DynBuf *db, uint8_t ch, uint8_t prog)
     db_push1(db, prog);
 }
 
-/* Plays a note */
 static void emit_on(DynBuf *db, uint32_t delta, uint8_t ch,
                     uint8_t note, uint8_t vel)
 {
@@ -209,7 +204,6 @@ static void emit_on(DynBuf *db, uint32_t delta, uint8_t ch,
     db_push1(db, vel);
 }
 
-/* Stops a note */
 static void emit_off(DynBuf *db, uint32_t delta, uint8_t ch, uint8_t note)
 {
     db_push_vlq(db, delta);
@@ -218,7 +212,6 @@ static void emit_off(DynBuf *db, uint32_t delta, uint8_t ch, uint8_t note)
     db_push1(db, 0);
 }
 
-/* Wrap raw MIDI events inside a proper track chunk */
 static uint8_t *make_mtrk(const uint8_t *events, size_t ev_len,
                           size_t *out_len)
 {
@@ -268,7 +261,6 @@ static const char *genre_name(Genre genre)
     }
 }
 
-/* Describes type of chord */
 typedef enum
 {
     CHORD_MAJOR = 0,
@@ -793,22 +785,26 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
     {
     case GENRE_LOFI:
         prog = 5; /* Electric Piano 2 */
-        scale = major_scale; scale_len = 7;
+        scale = major_scale;
+        scale_len = 7;
         patterns = LOFI_PATTERNS;
         break;
     case GENRE_ROCK:
         prog = 0; /* Acoustic Grand Piano */
-        scale = mixolydian; scale_len = 7;
+        scale = mixolydian;
+        scale_len = 7;
         patterns = ROCK_PATTERNS;
         break;
     case GENRE_LOONY_TUNES:
         prog = 5; /* Electric Piano 2 */
-        scale = major_penta; scale_len = 5;
+        scale = major_penta;
+        scale_len = 5;
         patterns = LOONY_TUNES_PATTERNS;
         break;
     default:
         prog = 0; /* Acoustic Grand Piano */
-        scale = major_scale; scale_len = 7;
+        scale = major_scale;
+        scale_len = 7;
         patterns = POP_PATTERNS;
         break;
     }
@@ -1201,11 +1197,11 @@ static int read_note(void)
 /* ==================== main ==================== */
 int main(void)
 {
-    printf("╔══════════════════════════════════════╗\n");
-    printf("║       MIDI Banger Generator          ║\n");
-    printf("╚══════════════════════════════════════╝\n\n");
+    printf("╔════════════════════════════════════╗\n");
+    printf("║       MIDI Banger Generator        ║\n");
+    printf("╚════════════════════════════════════╝\n\n");
 
-    /* ── Collect parameters ─────────────────────────────────────────────── */
+    /* collect parameters */
     int bpm = read_int("BPM (tempo)", 40, 240);
     printf("\n");
 
@@ -1230,7 +1226,7 @@ int main(void)
     if (genre == GENRE_ROCK)
         rock_prog = rand() % PROG_COUNT(ROCK_PROGRESSIONS);
 
-    printf("──────────────── LOG ────────────────\n");
+    printf("--- LOG ---\n");
     printf("[Parent] BPM=%d  bars=%d  genre=%s  key=%d\n",
            bpm, bars, genre_name(genre), key_root);
     if (genre == GENRE_POP)
@@ -1241,7 +1237,7 @@ int main(void)
         printf("[Parent] Rock progression: %s\n", prog_get(ROCK_PROGRESSIONS, PROG_COUNT(ROCK_PROGRESSIONS), rock_prog)->name);
     fflush(stdout);
 
-    /* ── Create pipes ────────────────────────────────────────────────────── */
+    /* create pipes */
     int to_child[NUM_WORKERS][2];
     int from_child[NUM_WORKERS][2];
 
@@ -1261,7 +1257,7 @@ int main(void)
     printf("[Parent] %d pipe pairs created\n", NUM_WORKERS * 2);
     fflush(stdout);
 
-    /* ── Fork all three workers concurrently ─────────────────────────────── */
+    /* fork workers */
     pid_t pids[NUM_WORKERS];
     WorkerRole roles[NUM_WORKERS] = {WORKER_DRUMS, WORKER_GUITAR, WORKER_PIANO};
 
@@ -1276,7 +1272,7 @@ int main(void)
 
         if (pid == 0)
         {
-            /* ── Child: close every pipe end except its own two ── */
+            /* close every pipe end except this child's own two */
             for (int j = 0; j < NUM_WORKERS; j++)
             {
                 /* Parent side of to_child: child never writes */
@@ -1319,7 +1315,7 @@ int main(void)
         fflush(stdout);
     }
 
-    /* ── Parent: close child-side pipe ends ──────────────────────────────── */
+    /* parent closes the child-side ends it no longer needs */
     for (int i = 0; i < NUM_WORKERS; i++)
     {
         if (close(to_child[i][0]) < 0)
@@ -1334,7 +1330,7 @@ int main(void)
         }
     }
 
-    /* ── Send spec to each worker ─────────────────────────────────────────── */
+    /* send spec to each worker */
     printf("\n[Parent] Sending specs to all workers...\n");
     fflush(stdout);
     for (int i = 0; i < NUM_WORKERS; i++)
@@ -1358,7 +1354,7 @@ int main(void)
         fflush(stdout);
     }
 
-    /* ── Receive track data from each worker ─────────────────────────────── */
+    /* collect track data from each worker */
     printf("\n[Parent] Collecting MIDI tracks from workers...\n");
     fflush(stdout);
 
@@ -1392,7 +1388,7 @@ int main(void)
         fflush(stdout);
     }
 
-    /* ── Wait for all workers (prevent zombies) ───────────────────────────── */
+    /* wait for all workers to exit */
     printf("\n[Parent] Waiting for worker processes to exit...\n");
     fflush(stdout);
     for (int i = 0; i < NUM_WORKERS; i++)
@@ -1411,12 +1407,12 @@ int main(void)
         fflush(stdout);
     }
 
-    /* ── Merge and write MIDI file ────────────────────────────────────────── */
+    /* write MIDI file */
     printf("\n[Parent] Merging tracks → %s ...\n", OUTPUT_FILE);
     fflush(stdout);
     write_midi_file(OUTPUT_FILE, bpm, tracks);
 
-    /* ── Free all heap memory ────────────────────────────────────────────── */
+    /* free track buffers */
     for (int i = 0; i < NUM_WORKERS; i++)
     {
         free(tracks[i].data);
@@ -1425,7 +1421,7 @@ int main(void)
 
     try_play_with_timidity(OUTPUT_FILE);
 
-    printf("─────────────────────────────────────\n");
+    printf("-------------------------------------\n");
     printf("\n");
     printf("╔══════════════════════════════════════╗\n");
     printf("║         Banger Generated!            ║\n");
