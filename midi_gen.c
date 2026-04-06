@@ -1220,6 +1220,55 @@ static int read_int(const char *prompt, int lo, int hi)
     }
 }
 
+/* Convert note name (e.g. "C4", "G#3", "Bb2") to MIDI number. Returns -1 if invalid. */
+static int note_to_midi(const char *s)
+{
+    /* semitone offsets: C D E F G A B */
+    static const int semitones[] = {0, 2, 4, 5, 7, 9, 11};
+    static const char *names = "CDEFGAB";
+    if (!s || !s[0]) return -1;
+
+    char letter = (char)(s[0] >= 'a' ? s[0] - 32 : s[0]);
+    const char *pos = strchr(names, letter);
+    if (!pos) return -1;
+
+    int semi = semitones[pos - names];
+    int i = 1;
+    if (s[i] == '#') { semi++; i++; }
+    else if (s[i] == 'b') { semi--; i++; }
+
+    if (s[i] < '0' || s[i] > '9') return -1;
+    int octave = s[i] - '0';
+    int midi = (octave + 1) * 12 + semi;
+    return (midi >= 0 && midi <= 127) ? midi : -1;
+}
+
+static int read_note(void)
+{
+    char buf[16];
+    printf("Key root – pick any note from the list below:\n");
+    printf("  C3  C#3  D3  D#3  E3  F3  F#3  G3  G#3  A3  A#3  B3\n");
+    printf("  C4  C#4  D4  D#4  E4  F4  F#4  G4  G#4  A4  A#4  B4\n");
+    printf("  C5  C#5  D5  D#5  E5  F5  F#5  G5  G#5  A5  A#5  B5\n");
+    printf("  C6\n");
+    printf("  (flats also work: Bb3, Eb4, Ab5 etc.)\n");
+    while (1)
+    {
+        printf("Key root: ");
+        fflush(stdout);
+        if (scanf("%15s", buf) == 1)
+        {
+            int midi = note_to_midi(buf);
+            if (midi >= 48 && midi <= 84)
+                return midi;
+        }
+        printf("  Invalid – try a note like C4, G#3, Bb2 (octaves 4–7).\n");
+        int c;
+        while ((c = getchar()) != '\n' && c != EOF)
+            ;
+    }
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*  main                                                                        */
 /* ═══════════════════════════════════════════════════════════════════════════ */
@@ -1234,8 +1283,7 @@ int main(void)
     int bars = read_int("Number of bars", 1, 64);
     printf("Genre  0=Pop  1=Lo-fi  2=Rock  3=Loony-Tunes\n");
     int genre = read_int("Genre", 0, 3);
-    printf("Key root MIDI note  (C4=60  D4=62  E4=64  F4=65  G4=67  A4=69  B4=71)\n");
-    int key_root = read_int("Key root", 48, 84);
+    int key_root = read_note();
     int lofi_prog = 0;
     int rock_prog = 0;
 
