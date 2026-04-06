@@ -1275,15 +1275,22 @@ static int read_note(void)
 int main(void)
 {
     printf("╔══════════════════════════════════════╗\n");
-    printf("║      MIDI Song Generator  v1.0       ║\n");
+    printf("║       MIDI Banger Generator          ║\n");
     printf("╚══════════════════════════════════════╝\n\n");
 
     /* ── Collect parameters ─────────────────────────────────────────────── */
     int bpm = read_int("BPM (tempo)", 40, 240);
+    printf("\n");
+
     int bars = read_int("Number of bars", 1, 64);
+    printf("\n");
+
     printf("Genre  0=Pop  1=Lo-fi  2=Rock  3=Loony-Tunes\n");
     int genre = read_int("Genre", 0, 3);
+    printf("\n");
+
     int key_root = read_note();
+    printf("\n");
     int lofi_prog = 0;
     int rock_prog = 0;
 
@@ -1293,12 +1300,13 @@ int main(void)
     if (genre == GENRE_ROCK)
         rock_prog = rand() % rock_progression_count();
 
-    printf("\n[Parent] Parameters: BPM=%d  bars=%d  genre=%s (%d)  key_root=%d\n\n",
-           bpm, bars, genre_name(genre), genre, key_root);
+    printf("──────────────── LOG ────────────────\n");
+    printf("[Parent] BPM=%d  bars=%d  genre=%s  key=%d\n",
+           bpm, bars, genre_name(genre), key_root);
     if (genre == GENRE_LOFI)
-        printf("[Parent] Lo-fi progression: %s\n\n", lofi_progression_name(lofi_prog));
+        printf("[Parent] Lo-fi progression: %s\n", lofi_progression_name(lofi_prog));
     if (genre == GENRE_ROCK)
-        printf("[Parent] Rock progression: %s\n\n", rock_progression_name(rock_prog));
+        printf("[Parent] Rock progression: %s\n", rock_progression_name(rock_prog));
     fflush(stdout);
 
     /* ── Create pipes ────────────────────────────────────────────────────── */
@@ -1483,8 +1491,16 @@ int main(void)
         tracks[i].data = NULL;
     }
 
-    printf("[Parent] Done!  '%s' written to disk.\n", OUTPUT_FILE);
     try_play_with_timidity(OUTPUT_FILE);
+
+    printf("─────────────────────────────────────\n");
+    printf("\n");
+    printf("╔══════════════════════════════════════╗\n");
+    printf("║         Banger Generated!            ║\n");
+    printf("║                                      ║\n");
+    printf("║   MIDI  ->  output.mid               ║\n");
+    printf("║   Audio ->  output.ogg               ║\n");
+    printf("╚══════════════════════════════════════╝\n\n");
     fflush(stdout);
     return EXIT_SUCCESS;
 }
