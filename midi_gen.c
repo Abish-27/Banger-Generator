@@ -792,29 +792,25 @@ static void gen_piano(const SongSpec *s, DynBuf *db)
     switch (s->genre)
     {
     case GENRE_LOFI:
-        prog = 5;
-        scale = major_scale;
-        scale_len = 7;
+        prog = 5; /* Electric Piano 2 */
+        scale = major_scale; scale_len = 7;
         patterns = LOFI_PATTERNS;
-        break; /* Electric Piano 2 */
+        break;
     case GENRE_ROCK:
-        prog = 0;
-        scale = mixolydian;
-        scale_len = 7;
+        prog = 0; /* Acoustic Grand Piano */
+        scale = mixolydian; scale_len = 7;
         patterns = ROCK_PATTERNS;
-        break; /* Acoustic Grand Piano */
+        break;
     case GENRE_LOONY_TUNES:
-        prog = 5;
-        scale = major_penta;
-        scale_len = 5;
+        prog = 5; /* Electric Piano 2 */
+        scale = major_penta; scale_len = 5;
         patterns = LOONY_TUNES_PATTERNS;
-        break; /* Electric Piano 2 */
+        break;
     default:
-        prog = 0;
-        scale = major_scale;
-        scale_len = 7;
+        prog = 0; /* Acoustic Grand Piano */
+        scale = major_scale; scale_len = 7;
         patterns = POP_PATTERNS;
-        break; /* Acoustic Grand Piano */
+        break;
     }
     emit_prog(db, CH, prog);
 
@@ -959,9 +955,8 @@ static void child_main(int spec_fd, int track_fd, WorkerRole role)
         exit(EXIT_FAILURE);
     }
 
-    printf("[%s] Spec received: BPM=%d bars=%d key=%d genre=%d\n",
-           name, spec.bpm, spec.bars, spec.key_root, spec.genre);
-    printf("[%s] Genre selected: %s\n", name, genre_name(spec.genre));
+    printf("[%s] Spec received: BPM=%d bars=%d key=%d genre=%s\n",
+           name, spec.bpm, spec.bars, spec.key_root, genre_name(spec.genre));
     if (spec.genre == GENRE_POP)
         printf("[%s] Pop progression: %s\n", name, prog_get(POP_PROGRESSIONS, PROG_COUNT(POP_PROGRESSIONS), spec.pop_prog)->name);
     if (spec.genre == GENRE_LOFI)
