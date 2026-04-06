@@ -63,7 +63,7 @@ typedef struct
     int bars;
     int beats_per_bar;
     int key_root; /* MIDI root note, e.g. C4 = 60 */
-    Genre genre;
+    int genre; /* 0=pop, 1=lofi, 2=rock, 3=loony-tunes */
     int lofi_prog; /* chosen once per song when genre=lofi */
     int rock_prog; /* chosen once per song when genre=rock */
     int pop_prog;  /* chosen once per song when genre=pop */
@@ -237,7 +237,7 @@ static uint8_t *make_mtrk(const uint8_t *events, size_t ev_len,
 
 /* ==================== Music helpers ==================== */
 
-static const char *genre_name(Genre genre)
+static const char *genre_name(int genre)
 {
     switch (genre)
     {
@@ -425,7 +425,7 @@ static const char *pop_progression_name(int idx)
 }
 
 /* Four-bar progressions per genre */
-static int bar_root(int key_root, int bar, Genre genre, int lofi_prog, int rock_prog, int pop_prog)
+static int bar_root(int key_root, int bar, int genre, int lofi_prog, int rock_prog, int pop_prog)
 {
     static const int loony_tunes[] = {0, 5, 9, 7};
 
@@ -441,7 +441,7 @@ static int bar_root(int key_root, int bar, Genre genre, int lofi_prog, int rock_
     return key_root;
 }
 
-static ChordQuality chord_quality(Genre genre, int bar, int lofi_prog, int rock_prog, int pop_prog)
+static ChordQuality chord_quality(int genre, int bar, int lofi_prog, int rock_prog, int pop_prog)
 {
     if (genre == GENRE_POP)
         return pop_progression(pop_prog)->qualities[bar % 4];
@@ -455,7 +455,7 @@ static ChordQuality chord_quality(Genre genre, int bar, int lofi_prog, int rock_
     return CHORD_MAJOR;
 }
 
-static int chord_is_minor(Genre genre, int bar, int lofi_prog, int rock_prog, int pop_prog)
+static int chord_is_minor(int genre, int bar, int lofi_prog, int rock_prog, int pop_prog)
 {
     ChordQuality quality = chord_quality(genre, bar, lofi_prog, rock_prog, pop_prog);
     return quality == CHORD_MINOR || quality == CHORD_MINOR7;
@@ -1326,7 +1326,7 @@ int main(void)
     printf("\n");
 
     printf("Genre  0=Pop  1=Lo-fi  2=Rock  3=Loony-Tunes\n");
-    Genre genre = (Genre)read_int("Genre", 0, 3);
+    int genre = read_int("Genre", 0, 3);
     printf("\n");
 
     int key_root = read_note();
